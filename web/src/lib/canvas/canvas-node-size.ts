@@ -5,6 +5,14 @@ export function fitNodeSize(width: number, height: number, maxWidth = 640, maxHe
     return { width: w * scale, height: h * scale };
 }
 
+export function preserveNodeImageSize(node: { width: number; height: number; metadata?: { freeResize?: boolean } }, naturalWidth: number, naturalHeight: number) {
+    if (node.metadata?.freeResize) return { width: node.width, height: node.height };
+    const w = Math.max(1, naturalWidth);
+    const h = Math.max(1, naturalHeight);
+    const scale = Math.max(1, node.width, node.height) / Math.max(w, h);
+    return { width: w * scale, height: h * scale };
+}
+
 export function nodeSizeFromRatio(size: string, baseWidth: number, baseHeight: number) {
     const match = size?.match(/^(\d+)(?:x|:)(\d+)/);
     if (!match) return null;

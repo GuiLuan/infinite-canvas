@@ -18,7 +18,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
-import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { fitNodeSize, nodeSizeFromRatio, preserveNodeImageSize } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
@@ -1821,8 +1821,7 @@ function InfiniteCanvasPage() {
                 }
                 const image = node.metadata?.images?.find((item) => item.id === itemId);
                 if (!image?.content) return node;
-                const edge = Math.max(node.width, node.height);
-                const size = node.metadata?.freeResize ? { width: node.width, height: node.height } : fitNodeSize(image.naturalWidth, image.naturalHeight, edge, edge);
+                const size = preserveNodeImageSize(node, image.naturalWidth, image.naturalHeight);
                 return {
                     ...node,
                     position: { x: node.position.x + node.width / 2 - size.width / 2, y: node.position.y + node.height / 2 - size.height / 2 },
@@ -2501,7 +2500,7 @@ function InfiniteCanvasPage() {
                         title: effectivePrompt.slice(0, 32) || "Generated Image",
                         position: {
                             x: reuseImageNode ? parentPosition.x : parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
+                            y: reuseImageNode ? parentPosition.y : parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
                         },
                         width: reuseImageNode ? sourceNode?.width || imageConfig.width : imageConfig.width,
                         height: reuseImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height,
@@ -2564,13 +2563,15 @@ function InfiniteCanvasPage() {
                                     ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, { signal: controller.signal }).then((items) => items[0])
                                     : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
                                 const uploaded = await uploadImage(image.dataUrl, { signal: controller.signal });
-                                const imageSize = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
                                 const item: CanvasNodeImage = { id: imageId, status: NODE_STATUS_SUCCESS, content: uploaded.url, storageKey: uploaded.storageKey, naturalWidth: uploaded.width, naturalHeight: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
                                 setNodes((prev) =>
                                     prev.map((node) => {
                                         if (node.id !== rootId) return node;
                                         const images = node.metadata?.images?.map((image) => (image.id === imageId ? item : image)) || [];
                                         if (node.metadata?.primaryImageId) return { ...node, metadata: { ...node.metadata, images } };
+                                        const imageSize = reuseImageNode
+                                            ? preserveNodeImageSize(node, uploaded.width, uploaded.height)
+                                            : fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
                                         const center = { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 };
                                         return {
                                             ...node,
@@ -2935,7 +2936,6 @@ function InfiniteCanvasPage() {
                     ? await requestEdit(generationConfig, prompt, retryImages, { signal: controller.signal }).then((items) => items[0])
                     : await requestGeneration(generationConfig, prompt, { signal: controller.signal }).then((items) => items[0]);
                 const uploadedImage = await uploadImage(image.dataUrl, { signal: controller.signal });
-                const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
                 const retryImage: CanvasNodeImage = {
                     id: imageId || node.metadata?.primaryImageId || nanoid(),
                     status: NODE_STATUS_SUCCESS,
@@ -2961,12 +2961,11 @@ function InfiniteCanvasPage() {
                     prev.map((item) => {
                         if (item.id !== node.id) return item;
                         const makePrimary = !imageId || !item.metadata?.content;
-                        const edge = imageId ? Math.max(item.width, item.height) : 0;
-                        const imageSize = imageId && item.metadata?.freeResize ? { width: item.width, height: item.height } : imageId ? fitNodeSize(uploadedImage.width, uploadedImage.height, edge, edge) : fitNodeSize(uploadedImage.width, uploadedImage.height, imageConfig.width, imageConfig.height);
+                        const imageSize = preserveNodeImageSize(item, uploadedImage.width, uploadedImage.height);
                         return {
                             ...item,
                             type: CanvasNodeType.Image,
-                            ...(makePrimary ? { width: imageSize.width, height: imageSize.height, ...(imageId ? { position: { x: item.position.x + item.width / 2 - imageSize.width / 2, y: item.position.y + item.height / 2 - imageSize.height / 2 } } : {}) } : {}),
+                            ...(makePrimary ? { width: imageSize.width, height: imageSize.height, position: { x: item.position.x + item.width / 2 - imageSize.width / 2, y: item.position.y + item.height / 2 - imageSize.height / 2 } } : {}),
                             metadata: {
                                 ...item.metadata,
                                 ...(makePrimary ? imageMetadata(uploadedImage) : { status: NODE_STATUS_SUCCESS }),
