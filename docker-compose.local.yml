@@ -7,3 +7,12 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+
+  proxy:
+    image: infinite-canvas-proxy:local
+    build:
+      context: ./canvas-proxy
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:23210:23210"
+    restart: unless-stopped

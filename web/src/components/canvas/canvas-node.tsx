@@ -8,6 +8,7 @@ import { pickImageSource } from "@/lib/image-thumbnail";
 import { previewUrlFor, subscribeImagePreviews, getImagePreviewRevision } from "@/services/image-storage";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
+import type { CanvasNodeResizeMeta, ResizeCorner } from "@/lib/canvas/canvas-node-alignment";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeText, type Position } from "@/types/canvas";
@@ -15,7 +16,6 @@ import type { CanvasNodeContext, CanvasPluginHost } from "@/types/canvas-plugin"
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useTranslation } from "react-i18next";
 
-type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
 
 type CanvasNodeProps = {
@@ -43,7 +43,7 @@ type CanvasNodeProps = {
     onHoverEnd: (nodeId: string) => void;
     onConnectStart: (event: React.MouseEvent, nodeId: string, handleType: "source" | "target") => void;
     onResizeStart: (nodeId: string) => void;
-    onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
+    onResize: (nodeId: string, width: number, height: number, position?: Position, meta?: CanvasNodeResizeMeta) => void;
     onResizeEnd: (nodeId: string) => void;
     onContentChange: (nodeId: string, content: string) => void;
     onTitleChange: (nodeId: string, title: string) => void;
@@ -253,10 +253,28 @@ export const CanvasNode = React.memo(function CanvasNode({
                 }
             }
 
-            onResize(data.id, width, height, {
-                x: fromLeft ? startRight - width : resizeRef.current.startLeft,
-                y: fromTop ? startBottom - height : resizeRef.current.startTop,
-            });
+            onResize(
+                data.id,
+                width,
+                height,
+                {
+                    x: fromLeft ? startRight - width : resizeRef.current.startLeft,
+                    y: fromTop ? startBottom - height : resizeRef.current.startTop,
+                },
+                {
+                    corner: resizeRef.current.corner,
+                    startLeft: resizeRef.current.startLeft,
+                    startTop: resizeRef.current.startTop,
+                    startWidth: resizeRef.current.startWidth,
+                    startHeight: resizeRef.current.startHeight,
+                    rawWidth,
+                    rawHeight,
+                    keepRatio: resizeRef.current.keepRatio,
+                    ratio: resizeRef.current.ratio,
+                    primaryAxis: Math.abs(dx) >= Math.abs(dy) ? "x" : "y",
+                    ctrlKey: event.ctrlKey,
+                },
+            );
         },
         [data.id, onResize, scale],
     );

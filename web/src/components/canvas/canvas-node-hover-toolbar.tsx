@@ -10,6 +10,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 import type { CanvasNodeToolbarItem } from "@/types/canvas-plugin";
+import { CloneTemplateIcon } from "./canvas-context-menu";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
 
@@ -36,6 +37,7 @@ type CanvasNodeHoverToolbarProps = {
     onReversePrompt: (node: CanvasNodeData) => void;
     onRetry: (node: CanvasNodeData) => void;
     onToggleFreeResize: (node: CanvasNodeData) => void;
+    onCloneTemplate: (node: CanvasNodeData) => void;
     onDelete: (node: CanvasNodeData) => void;
     onUngroup?: (node: CanvasNodeData) => void;
     extraTools?: CanvasNodeToolbarItem[];
@@ -74,6 +76,7 @@ export function CanvasNodeHoverToolbar({
     onReversePrompt,
     onRetry,
     onToggleFreeResize,
+    onCloneTemplate,
     onDelete,
     onUngroup,
     extraTools = [],
@@ -139,6 +142,7 @@ export function CanvasNodeHoverToolbar({
 
     const baseToolbarTools: ToolbarTool[] = [
         { id: "info", title: t("canvas.nodeToolbar.infoTitle"), label: t("canvas.nodeToolbar.info"), icon: <Info className="size-4" />, onClick: () => onInfo(node) },
+        ...(node.type !== CanvasNodeType.Group ? [{ id: "cloneTemplate", title: t("canvas.nodeToolbar.cloneTemplateTitle"), label: t("canvas.nodeToolbar.cloneTemplate"), icon: <CloneTemplateIcon />, onClick: () => onCloneTemplate(node) }] : []),
         ...(node.type === CanvasNodeType.Group && onUngroup ? [{ id: "ungroup", title: t("canvas.nodeToolbar.ungroupTitle"), label: t("canvas.nodeToolbar.ungroup"), icon: <Ungroup className="size-4" />, onClick: () => onUngroup(node) }] : []),
         { id: "delete", title: t("canvas.nodeToolbar.removeTitle"), label: t("common.delete"), icon: <Trash2 className="size-4" />, onClick: () => onDelete(node), danger: true },
     ];

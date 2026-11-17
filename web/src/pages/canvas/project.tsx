@@ -48,8 +48,10 @@ import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
-import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, focusViewportForNode, getConnectionTargetAnchor, getGroupWrapRect, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, cloneNodeAsTemplate, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
+import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, focusViewportForNode, getConnectionTargetAnchor, getGroupWrapRect, nodeBounds, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { resolveDragAlignment, resolveResizeAlignment, type AlignmentGuide, type CanvasNodeResizeMeta } from "@/lib/canvas/canvas-node-alignment";
+import { applySelectionLayout, getAlignableSelectedNodes, type SelectionLayoutAction } from "@/lib/canvas/canvas-node-layout";
 import {
     audioExtension,
     buildAngleLabel,
@@ -246,6 +248,9 @@ function InfiniteCanvasPage() {
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
+    const [alignMode, setAlignMode] = useState(false);
+    const [snapMode, setSnapMode] = useState(false);
+    const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
@@ -276,6 +281,8 @@ function InfiniteCanvasPage() {
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const viewportRef = useRef(viewport);
+    const alignModeRef = useRef(alignMode);
+    const snapModeRef = useRef(snapMode);
     const focusAnimRef = useRef<number | null>(null);
     const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
@@ -455,6 +462,8 @@ function InfiniteCanvasPage() {
             setActiveChatId(project.activeChatId || null);
             setBackgroundMode(project.backgroundMode);
             setShowImageInfo(project.showImageInfo || false);
+            setAlignMode(project.alignMode || false);
+            setSnapMode(project.snapMode || false);
             setViewport(project.viewport);
             historyRef.current = { past: [], future: [] };
             if (historyCommitTimerRef.current) {
@@ -523,8 +532,8 @@ function InfiniteCanvasPage() {
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
-    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo, alignMode, snapMode });
+    }, [activeChatId, alignMode, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, snapMode, updateProject]);
 
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);
@@ -547,10 +556,12 @@ function InfiniteCanvasPage() {
         connectionsRef.current = connections;
         selectedNodeIdsRef.current = selectedNodeIds;
         viewportRef.current = viewport;
+        alignModeRef.current = alignMode;
+        snapModeRef.current = snapMode;
         connectingParamsRef.current = connectingParams;
         connectionTargetNodeIdRef.current = connectionTargetNodeId;
         pendingConnectionCreateRef.current = pendingConnectionCreate;
-    }, [nodes, connections, selectedNodeIds, viewport, connectingParams, connectionTargetNodeId, pendingConnectionCreate]);
+    }, [alignMode, connections, connectingParams, connectionTargetNodeId, nodes, pendingConnectionCreate, selectedNodeIds, snapMode, viewport]);
 
     useLayoutEffect(() => {
         selectionBoxRef.current = selectionBox;
@@ -742,6 +753,7 @@ function InfiniteCanvasPage() {
     const selectedNodes = useMemo(() => nodes.filter((node) => selectedNodeIds.has(node.id)), [nodes, selectedNodeIds]);
     const canGroupSelection = canGroupSelectedNodes(selectedNodeIds, nodes);
     const canUngroupSelection = canUngroupSelectedNodes(selectedNodeIds, nodes);
+    const canDistributeSelection = useMemo(() => getAlignableSelectedNodes(selectedNodeIds, nodes).length >= 3, [nodes, selectedNodeIds]);
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
     const groupChildCountById = useMemo(() => {
         const map = new Map<string, number>();
@@ -922,6 +934,10 @@ function InfiniteCanvasPage() {
         setContextMenu(null);
     }, []);
 
+    const layoutSelection = useCallback((action: SelectionLayoutAction) => {
+        setNodes((prev) => applySelectionLayout(selectedNodeIdsRef.current, prev, action));
+    }, []);
+
     const deleteConnection = useCallback((connectionId: string) => {
         setConnections((prev) => prev.filter((conn) => conn.id !== connectionId));
         setSelectedConnectionId((current) => (current === connectionId ? null : current));
@@ -1009,6 +1025,23 @@ function InfiniteCanvasPage() {
         setSelectedConnectionId(null);
         if (next.type !== CanvasNodeType.Group) setDialogNodeId(id);
     }, []);
+
+    const cloneNodeTemplate = useCallback(
+        (nodeId: string) => {
+            const source = nodesRef.current.find((node) => node.id === nodeId);
+            if (!source || source.type === CanvasNodeType.Group) return;
+
+            const next = cloneNodeAsTemplate(source, t("canvas.node.templateTitle", { title: source.title || t("canvas.node.untitled") }));
+            const referenceConnections = connectionsRef.current.filter((connection) => connection.toNodeId === nodeId).map((connection) => ({ ...connection, id: nanoid(), toNodeId: next.id }));
+
+            setNodes((prev) => [...prev, next]);
+            setConnections((prev) => [...prev, ...referenceConnections]);
+            setSelectedNodeIds(new Set([next.id]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(next.id);
+        },
+        [t],
+    );
 
     const copySelectedNodes = useCallback(() => {
         const selectedIds = selectedNodeIdsRef.current;
@@ -1303,7 +1336,7 @@ function InfiniteCanvasPage() {
         setIsNodeDragging(true);
     }, []);
 
-    const finishNodeDrag = useCallback((clientX?: number, clientY?: number) => {
+    const finishNodeDrag = useCallback((clientX?: number, clientY?: number, ctrlKey = false) => {
         if (rafRef.current) {
             cancelAnimationFrame(rafRef.current);
             rafRef.current = null;
@@ -1322,11 +1355,25 @@ function InfiniteCanvasPage() {
         nodeDraggingRef.current = false;
         setIsNodeDragging(false);
         setDropTargetGroupId(null);
+        setAlignmentGuides([]);
         if (dragRef.current.hasMoved && clientX != null && clientY != null) {
             setNodes((prev) => {
+                const rawMoved: CanvasNodeData[] = [];
+                const otherNodes: CanvasNodeData[] = [];
+                prev.forEach((node) => {
+                    const initial = initialPositions.get(node.id);
+                    if (initial) rawMoved.push({ ...node, position: { x: initial.x + dx, y: initial.y + dy } });
+                    else otherNodes.push(node);
+                });
+                const alignEnabled = alignModeRef.current !== ctrlKey;
+                const snapEnabled = snapModeRef.current;
+                const { dxAdjust, dyAdjust } =
+                    rawMoved.length && (alignEnabled || snapEnabled)
+                        ? resolveDragAlignment({ rawBounds: nodeBounds(rawMoved), otherNodes, alignEnabled, snapEnabled, scale: currentViewport.k })
+                        : { dxAdjust: 0, dyAdjust: 0 };
                 const moved = prev.map((node) => {
                     const initial = initialPositions.get(node.id);
-                    return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
+                    return initial ? { ...node, position: { x: initial.x + dx + dxAdjust, y: initial.y + dy + dyAdjust } } : node;
                 });
                 const targetGroup = findGroupDropTarget(movedIds, moved);
                 if (targetGroup) return snapNodesIntoGroup(movedIds, moved, targetGroup);
@@ -1366,24 +1413,42 @@ function InfiniteCanvasPage() {
             if (dragRef.current.isDraggingNode) {
                 const dx = (event.clientX - dragRef.current.startX) / currentViewport.k;
                 const dy = (event.clientY - dragRef.current.startY) / currentViewport.k;
+                const ctrlKey = event.ctrlKey;
                 const initialPositions = dragRef.current.initialSelectedNodes;
                 const movedIds = dragRef.current.movedIds;
                 if (Math.abs(event.clientX - dragRef.current.startX) > 3 || Math.abs(event.clientY - dragRef.current.startY) > 3) {
                     dragRef.current.hasMoved = true;
                 }
+                const hasMoved = dragRef.current.hasMoved;
 
                 // Drop-target detection and node updates both run once per frame; mousemove can fire far more often than the display refreshes.
                 if (rafRef.current) cancelAnimationFrame(rafRef.current);
                 rafRef.current = requestAnimationFrame(() => {
-                    const previewNodes = nodesRef.current.map((node) => {
+                    if (!dragRef.current.isDraggingNode) return;
+                    const currentNodes = nodesRef.current;
+                    const rawMoved: CanvasNodeData[] = [];
+                    const otherNodes: CanvasNodeData[] = [];
+                    currentNodes.forEach((node) => {
                         const initial = initialPositions.get(node.id);
-                        return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
+                        if (initial) rawMoved.push({ ...node, position: { x: initial.x + dx, y: initial.y + dy } });
+                        else otherNodes.push(node);
                     });
+                    const alignEnabled = alignModeRef.current !== ctrlKey;
+                    const snapEnabled = snapModeRef.current;
+                    const { dxAdjust, dyAdjust, guides } =
+                        hasMoved && rawMoved.length && (alignEnabled || snapEnabled)
+                            ? resolveDragAlignment({ rawBounds: nodeBounds(rawMoved), otherNodes, alignEnabled, snapEnabled, scale: currentViewport.k })
+                            : { dxAdjust: 0, dyAdjust: 0, guides: [] };
+                    const previewNodes = currentNodes.map((node) => {
+                        const initial = initialPositions.get(node.id);
+                        return initial ? { ...node, position: { x: initial.x + dx + dxAdjust, y: initial.y + dy + dyAdjust } } : node;
+                    });
+                    setAlignmentGuides(guides);
                     setDropTargetGroupId(findGroupDropTarget(movedIds, previewNodes)?.id || null);
                     setNodes((prev) =>
                         prev.map((node) => {
                             const initial = initialPositions.get(node.id);
-                            return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
+                            return initial ? { ...node, position: { x: initial.x + dx + dxAdjust, y: initial.y + dy + dyAdjust } } : node;
                         }),
                     );
                     rafRef.current = null;
@@ -1436,7 +1501,7 @@ function InfiniteCanvasPage() {
 
     const handleGlobalMouseUp = useCallback(
         (event: MouseEvent) => {
-            finishNodeDrag(event.clientX, event.clientY);
+            finishNodeDrag(event.clientX, event.clientY, event.ctrlKey);
 
             selectionBoxRef.current = null;
             setSelectionBox(null);
@@ -1461,7 +1526,7 @@ function InfiniteCanvasPage() {
     );
 
     useEffect(() => {
-        const handlePointerUp = (event: PointerEvent) => finishNodeDrag(event.clientX, event.clientY);
+        const handlePointerUp = (event: PointerEvent) => finishNodeDrag(event.clientX, event.clientY, event.ctrlKey);
         const cancelNodeDrag = () => finishNodeDrag();
         window.addEventListener("mousemove", handleGlobalMouseMove);
         window.addEventListener("mouseup", handleGlobalMouseUp);
@@ -1679,14 +1744,36 @@ function InfiniteCanvasPage() {
         [screenToCanvas, setConnecting],
     );
 
-    const handleNodeResize = useCallback((nodeId: string, width: number, height: number, position?: Position) => {
+    const handleNodeResize = useCallback((nodeId: string, width: number, height: number, position?: Position, meta?: CanvasNodeResizeMeta) => {
+        if (meta && position) {
+            const alignEnabled = alignModeRef.current !== meta.ctrlKey;
+            const snapEnabled = snapModeRef.current;
+            const otherNodes = nodesRef.current.filter((node) => node.id !== nodeId);
+            const resolved = resolveResizeAlignment({
+                meta,
+                width,
+                height,
+                position,
+                otherNodes,
+                alignEnabled,
+                snapEnabled,
+                scale: viewportRef.current.k,
+            });
+            setAlignmentGuides(resolved.guides);
+            setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, width: resolved.width, height: resolved.height, position: resolved.position } : node)));
+            return;
+        }
+        setAlignmentGuides([]);
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, width, height, position: position || node.position } : node)));
     }, []);
 
     const handleNodeResizeStart = useCallback(() => {
         setIsNodeResizing(true);
     }, []);
-    const handleNodeResizeEnd = useCallback(() => setIsNodeResizing(false), []);
+    const handleNodeResizeEnd = useCallback(() => {
+        setIsNodeResizing(false);
+        setAlignmentGuides([]);
+    }, []);
 
     const toggleNodeFreeResize = useCallback((nodeId: string) => {
         setNodes((prev) =>
@@ -2317,10 +2404,10 @@ function InfiniteCanvasPage() {
         setTitleEditing(false);
     }, [projectId, renameProject, titleDraft]);
 
-    const preventCanvasContextMenu = useCallback((event: ReactMouseEvent) => {
-        if ((event.target as HTMLElement).closest("[data-node-id]")) return;
+    const handleCanvasContextMenu = useCallback((event: ReactMouseEvent) => {
+        if ((event.target as HTMLElement).closest("[data-node-id],[data-connection-id]")) return;
         event.preventDefault();
-        setContextMenu(null);
+        setContextMenu({ type: "canvas", x: event.clientX, y: event.clientY });
     }, []);
 
     const handleGenerateNode = useCallback(
@@ -3186,6 +3273,7 @@ function InfiniteCanvasPage() {
                     viewport={viewport}
                     tool={canvasTool}
                     backgroundMode={backgroundMode}
+                    suppressTempTool={isNodeDragging || isNodeResizing}
                     onViewportChange={(next) => {
                         setViewport(next);
                         setContextMenu(null);
@@ -3199,7 +3287,7 @@ function InfiniteCanvasPage() {
                         setContextMenu(null);
                         setNodeCreatePosition(screenToCanvas(event.clientX, event.clientY));
                     }}
-                    onContextMenu={preventCanvasContextMenu}
+                    onContextMenu={handleCanvasContextMenu}
                     onDrop={handleDrop}
                 >
                     <svg className="absolute left-0 top-0 h-[10000px] w-[10000px] overflow-visible" style={{ pointerEvents: "none", transform: "translateZ(0)", zIndex: 0 }}>
@@ -3223,6 +3311,18 @@ function InfiniteCanvasPage() {
                             />
                         ))}
                         {connectingParams ? <ActiveConnectionPath node={nodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? nodeById.get(connectionTargetNodeId) : undefined} /> : null}
+                        {alignmentGuides.map((guide, index) => (
+                            <line
+                                key={`${guide.orientation}-${index}`}
+                                x1={guide.orientation === "vertical" ? guide.pos : guide.start}
+                                y1={guide.orientation === "vertical" ? guide.start : guide.pos}
+                                x2={guide.orientation === "vertical" ? guide.pos : guide.end}
+                                y2={guide.orientation === "vertical" ? guide.end : guide.pos}
+                                stroke="#2f80ff"
+                                strokeWidth={1 / viewport.k}
+                                strokeDasharray={`${4 / viewport.k} ${3 / viewport.k}`}
+                            />
+                        ))}
                     </svg>
 
                     {visibleNodes.map((node) => (
@@ -3343,6 +3443,7 @@ function InfiniteCanvasPage() {
                     onReversePrompt={createImageReversePromptNodes}
                     onRetry={(node) => void handleRetryNode(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
+                    onCloneTemplate={(node) => cloneNodeTemplate(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                     onUngroup={(node) => ungroupSelection(new Set([node.id]))}
                 />
@@ -3354,8 +3455,10 @@ function InfiniteCanvasPage() {
                         showToolbar={!isNodeDragging && !isNodeResizing}
                         canGroup={canGroupSelection}
                         canUngroup={canUngroupSelection}
+                        canDistribute={canDistributeSelection}
                         onGroup={groupSelection}
                         onUngroup={ungroupSelection}
+                        onLayout={layoutSelection}
                     />
                 ) : null}
 
@@ -3394,6 +3497,9 @@ function InfiniteCanvasPage() {
                         canCaptureVideoFrame={contextMenuNode?.type === CanvasNodeType.Video && Boolean(contextMenuNode.metadata?.content)}
                         canGroup={contextMenu.type === "node" && canGroupSelection}
                         canUngroup={contextMenu.type === "node" && canUngroupSelection}
+                        canCloneTemplate={contextMenu.type === "node" && Boolean(contextMenuNode) && contextMenuNode?.type !== CanvasNodeType.Group}
+                        alignMode={alignMode}
+                        snapMode={snapMode}
                         onClose={() => setContextMenu(null)}
                         onCaptureVideoFrame={(position) => {
                             if (contextMenu.type !== "node") return;
@@ -3404,12 +3510,25 @@ function InfiniteCanvasPage() {
                             duplicateNode(contextMenu.nodeId);
                             setContextMenu(null);
                         }}
+                        onCloneTemplate={() => {
+                            if (contextMenu.type !== "node") return;
+                            cloneNodeTemplate(contextMenu.nodeId);
+                            setContextMenu(null);
+                        }}
                         onGroup={groupSelection}
                         onUngroup={ungroupSelection}
+                        onToggleAlignMode={() => {
+                            setAlignMode((value) => !value);
+                            setContextMenu(null);
+                        }}
+                        onToggleSnapMode={() => {
+                            setSnapMode((value) => !value);
+                            setContextMenu(null);
+                        }}
                         onDelete={() => {
                             if (contextMenu.type === "node") {
                                 deleteNodes(new Set([contextMenu.nodeId]));
-                            } else {
+                            } else if (contextMenu.type === "connection") {
                                 deleteConnection(contextMenu.connectionId);
                             }
                             setContextMenu(null);

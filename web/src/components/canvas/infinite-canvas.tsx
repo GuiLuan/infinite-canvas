@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 
+import { CANVAS_GRID_SIZE } from "@/lib/canvas/canvas-node-alignment";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
@@ -9,6 +10,7 @@ type InfiniteCanvasProps = {
     viewport: ViewportTransform;
     tool: "select" | "pan";
     backgroundMode?: CanvasBackgroundMode;
+    suppressTempTool?: boolean;
     onViewportChange: (viewport: ViewportTransform) => void;
     onCanvasMouseDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
     onCanvasDeselect?: () => void;
@@ -18,7 +20,7 @@ type InfiniteCanvasProps = {
     children: React.ReactNode;
 };
 
-export function InfiniteCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: InfiniteCanvasProps) {
+export function InfiniteCanvas({ containerRef, viewport, tool, backgroundMode = "lines", suppressTempTool = false, onViewportChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: InfiniteCanvasProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
         isPanning: false,
@@ -203,7 +205,7 @@ export function InfiniteCanvas({ containerRef, viewport, tool, backgroundMode = 
         return () => container.removeEventListener("wheel", preventWheelScroll);
     }, [containerRef]);
 
-    const temporaryTool = isControlPressed || isSpacePressed;
+    const temporaryTool = !suppressTempTool && (isControlPressed || isSpacePressed);
     const activeTool = temporaryTool ? (tool === "select" ? "pan" : "select") : tool;
     const cursor = isPanning ? "grabbing" : activeTool === "pan" ? "grab" : undefined;
 
@@ -236,7 +238,7 @@ function CanvasGrid({ viewport, mode }: { viewport: ViewportTransform; mode: Can
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     if (mode === "blank") return null;
 
-    const gridSize = 48 * viewport.k;
+    const gridSize = CANVAS_GRID_SIZE * viewport.k;
     const x = viewport.x % gridSize;
     const y = viewport.y % gridSize;
     const dotSize = viewport.k < 0.12 ? 0.8 : 1.15;

@@ -69,3 +69,47 @@ export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<Canvas
     const size = typeof safePatch.size === "string" && !node.metadata?.content ? nodeSizeFromRatio(safePatch.size, spec.width, spec.height) : null;
     return size && (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video) ? { ...next, ...size, position: { x: node.position.x + node.width / 2 - size.width / 2, y: node.position.y + node.height / 2 - size.height / 2 } } : next;
 }
+
+export function cloneNodeAsTemplate(source: CanvasNodeData, templateTitle: string): CanvasNodeData {
+    const id = `${source.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const {
+        content: _content,
+        storageKey: _storageKey,
+        images: _images,
+        primaryImageId: _primaryImageId,
+        texts: _texts,
+        primaryTextId: _primaryTextId,
+        videoTaskId: _videoTaskId,
+        videoTaskProvider: _videoTaskProvider,
+        status: _status,
+        errorDetails: _errorDetails,
+        naturalWidth: _naturalWidth,
+        naturalHeight: _naturalHeight,
+        bytes: _bytes,
+        mimeType: _mimeType,
+        durationMs: _durationMs,
+        references: _references,
+        freeResize: _freeResize,
+        composerContent: _composerContent,
+        ...preservedMetadata
+    } = source.metadata || {};
+
+    const isConfig = source.type === CanvasNodeType.Config;
+    const nextMetadata: CanvasNodeMetadata = {
+        ...preservedMetadata,
+        ...(isConfig
+            ? source.metadata?.composerContent !== undefined
+                ? { composerContent: source.metadata.composerContent }
+                : {}
+            : { prompt: source.metadata?.prompt || source.metadata?.composerContent || "" }),
+        status: "idle",
+    };
+
+    return {
+        ...source,
+        id,
+        title: templateTitle,
+        position: { x: source.position.x + 36, y: source.position.y + 36 },
+        metadata: nextMetadata,
+    };
+}

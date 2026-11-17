@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nodeBounds } from "@/lib/canvas/canvas-node-geometry";
+import type { SelectionLayoutAction } from "@/lib/canvas/canvas-node-layout";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -16,16 +17,20 @@ export function CanvasSelectionToolbar({
     showToolbar,
     canGroup,
     canUngroup,
+    canDistribute,
     onGroup,
     onUngroup,
+    onLayout,
 }: {
     nodes: CanvasNodeData[];
     viewport: ViewportTransform;
     showToolbar: boolean;
     canGroup: boolean;
     canUngroup: boolean;
+    canDistribute: boolean;
     onGroup: () => void;
     onUngroup: () => void;
+    onLayout: (action: SelectionLayoutAction) => void;
 }) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -36,7 +41,6 @@ export function CanvasSelectionToolbar({
     const top = viewport.y + bounds.top * viewport.k - SELECTION_PAD;
     const width = (bounds.right - bounds.left) * viewport.k + SELECTION_PAD * 2;
     const height = (bounds.bottom - bounds.top) * viewport.k + SELECTION_PAD * 2;
-    const showActions = showToolbar && (canGroup || canUngroup);
 
     return (
         <>
@@ -56,13 +60,24 @@ export function CanvasSelectionToolbar({
                     strokeLinecap="round"
                 />
             </svg>
-            {showActions ? (
+            {showToolbar ? (
                 <div
-                    className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
-                    style={{ left: left + width / 2, top: top - 8 }}
+                    className="absolute z-[70] flex h-11 -translate-x-1/2 -translate-y-full items-center gap-0.5 overflow-visible rounded-[16px] border px-1.5 text-[14px] shadow-[0_8px_28px_rgba(15,23,42,.16)] backdrop-blur"
+                    style={{ left: left + width / 2, top: top - 8, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
                     onMouseDown={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                 >
+                    <SelectionIconButton title={t("canvas.selectionToolbar.alignLeft")} icon={<AlignLeftIcon />} onClick={() => onLayout("align-left")} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.alignCenterX")} icon={<AlignCenterXIcon />} onClick={() => onLayout("align-center-x")} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.alignRight")} icon={<AlignRightIcon />} onClick={() => onLayout("align-right")} />
+                    <ToolbarDivider borderColor={theme.toolbar.border} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.alignTop")} icon={<AlignTopIcon />} onClick={() => onLayout("align-top")} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.alignCenterY")} icon={<AlignCenterYIcon />} onClick={() => onLayout("align-center-y")} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.alignBottom")} icon={<AlignBottomIcon />} onClick={() => onLayout("align-bottom")} />
+                    <ToolbarDivider borderColor={theme.toolbar.border} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.distributeX")} icon={<DistributeXIcon />} disabled={!canDistribute} onClick={() => onLayout("distribute-x")} />
+                    <SelectionIconButton title={t("canvas.selectionToolbar.distributeY")} icon={<DistributeYIcon />} disabled={!canDistribute} onClick={() => onLayout("distribute-y")} />
+                    {canGroup || canUngroup ? <ToolbarDivider borderColor={theme.toolbar.border} /> : null}
                     {canGroup ? <SelectionAction title={t("canvas.nodeToolbar.groupTitle")} label={t("canvas.nodeToolbar.group")} icon={<Group className="size-4" />} onClick={onGroup} /> : null}
                     {canUngroup ? <SelectionAction title={t("canvas.nodeToolbar.ungroupTitle")} label={t("canvas.nodeToolbar.ungroup")} icon={<Ungroup className="size-4" />} onClick={onUngroup} /> : null}
                 </div>
@@ -71,15 +86,113 @@ export function CanvasSelectionToolbar({
     );
 }
 
-function SelectionAction({ title, label, icon, onClick }: { title: string; label: string; icon: ReactNode; onClick: () => void }) {
+function ToolbarDivider({ borderColor }: { borderColor: string }) {
+    return <div className="mx-1 h-5 w-px shrink-0" style={{ background: borderColor }} />;
+}
+
+function SelectionIconButton({ title, icon, disabled = false, onClick }: { title: string; icon: ReactNode; disabled?: boolean; onClick: () => void }) {
     return (
-        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color="#ffffff" styles={{ root: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
-            <button type="button" className="group relative flex h-12 items-center whitespace-nowrap px-1.5" onClick={onClick} aria-label={title}>
-                <span className="flex h-9 items-center gap-2 rounded-lg px-2.5 transition group-hover:bg-[#f0f0f1]">
-                    {icon}
-                    <span>{label}</span>
-                </span>
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
+            <button
+                type="button"
+                disabled={disabled}
+                className="flex h-8 w-8 items-center justify-center rounded-lg transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-white/10"
+                onClick={onClick}
+                aria-label={title}
+            >
+                {icon}
             </button>
         </Tooltip>
+    );
+}
+
+function SelectionAction({ title, label, icon, onClick }: { title: string; label: string; icon: ReactNode; onClick: () => void }) {
+    return (
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
+            <button type="button" className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onClick} aria-label={title}>
+                {icon}
+                <span>{label}</span>
+            </button>
+        </Tooltip>
+    );
+}
+
+function AlignLeftIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M2.5 2v12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="4.5" y="4" width="9" height="3" rx="0.8" fill="currentColor" />
+            <rect x="4.5" y="9" width="6" height="3" rx="0.8" fill="currentColor" opacity="0.7" />
+        </svg>
+    );
+}
+
+function AlignCenterXIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M8 2v12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="3" y="4" width="10" height="3" rx="0.8" fill="currentColor" />
+            <rect x="4.5" y="9" width="7" height="3" rx="0.8" fill="currentColor" opacity="0.7" />
+        </svg>
+    );
+}
+
+function AlignRightIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M13.5 2v12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="2.5" y="4" width="9" height="3" rx="0.8" fill="currentColor" />
+            <rect x="5.5" y="9" width="6" height="3" rx="0.8" fill="currentColor" opacity="0.7" />
+        </svg>
+    );
+}
+
+function AlignTopIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M2 2.5h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="4" y="4.5" width="3" height="9" rx="0.8" fill="currentColor" />
+            <rect x="9" y="4.5" width="3" height="6" rx="0.8" fill="currentColor" opacity="0.7" />
+        </svg>
+    );
+}
+
+function AlignCenterYIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M2 8h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="4" y="3" width="3" height="10" rx="0.8" fill="currentColor" />
+            <rect x="9" y="4.5" width="3" height="7" rx="0.8" fill="currentColor" opacity="0.7" />
+        </svg>
+    );
+}
+
+function AlignBottomIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M2 13.5h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="4" y="2.5" width="3" height="9" rx="0.8" fill="currentColor" />
+            <rect x="9" y="5.5" width="3" height="6" rx="0.8" fill="currentColor" opacity="0.7" />
+        </svg>
+    );
+}
+
+function DistributeXIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M2 2.5v11M14 2.5v11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            <rect x="4.2" y="4.5" width="2.6" height="7" rx="0.7" fill="currentColor" />
+            <rect x="9.2" y="4.5" width="2.6" height="7" rx="0.7" fill="currentColor" />
+        </svg>
+    );
+}
+
+function DistributeYIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="size-4" aria-hidden="true">
+            <path d="M2.5 2h11M2.5 14h11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            <rect x="4.5" y="4.2" width="7" height="2.6" rx="0.7" fill="currentColor" />
+            <rect x="4.5" y="9.2" width="7" height="2.6" rx="0.7" fill="currentColor" />
+        </svg>
     );
 }
