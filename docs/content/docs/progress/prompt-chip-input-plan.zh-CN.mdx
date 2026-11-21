@@ -38,7 +38,7 @@ Props：`value: string`、`references: CanvasResourceReference[]`、`onChange(va
 3. **value ← DOM（syncFromEditor）**：仿 `serializeNodes`，但 chip 序列化为 `dataset.refLabel`（label 文本）而非 node 标记；文本节点原样拼接，`<br>` → `\n`。
 4. **@ 菜单**：复用 `textBeforeCaret` + `/@([^\s@]*)$/` 检测；菜单定位改用 `getSelection().getRangeAt(0).getBoundingClientRect()`（比 textarea 的镜像 div 更简单、天然贴着光标）。菜单 UI 沿用现有 `MentionMenu` 的视觉（缩略图 + label + 副标题）。
 5. **原子删除**：直接复用 composer 的 `deleteAdjacentReference` / `adjacentReferenceNode` / `findReferenceSibling`——contentEditable + `contentEditable="false"` chip 天然整体删除。可把这几个通用 DOM 助手连同 `textBeforeCaret` / `placeCaretAtEnd` / `closestEditor` 复制进新组件（保持 composer 不动，规避回归风险）。
-6. **回车发送 + IME**：复用 `isPlainEnterKey` / `isImeComposing`（`@/lib/keyboard-event`）与 `onCompositionStart/End`，发送时调用 `onSubmit`。
+6. **生成快捷键与输入法**：复用 `isGenerationShortcut` / `isImeComposing`（`@/lib/keyboard-event`）与 `onCompositionStart/End`。Enter 和 Shift+Enter 换行，默认 Ctrl/Command+Enter 调用 `onSubmit`，输入法组合期间不提交。使用 Tab 选中参考项。
 7. **占位符 & 样式**：空值时显示 placeholder（absolute 占位层）；容器套用面板传入的 `className/style`（`min-h-40`、透明底、无边框，与当前一致）。
 
 ### 替换点

@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
+import { App, Button, Form, Input, Modal, Progress, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -17,6 +17,7 @@ import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webd
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { generationShortcutLabel, type GenerationShortcut } from "@/lib/keyboard-event";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -269,17 +270,16 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         />
                                     </Form.Item>
                                 </div>
-                                <Form.Item label={t("config.preferences.regenerateBehavior")} className="mb-4">
-                                    <Radio.Group value={config.nodeRegenerateBehavior} onChange={(event) => updateConfig("nodeRegenerateBehavior", event.target.value)} className="flex flex-col gap-2">
-                                        <Radio value="overwrite">
-                                            <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorOverwrite")}</span>
-                                            <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorOverwriteDescription")}</span>
-                                        </Radio>
-                                        <Radio value="new-node">
-                                            <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorNewNode")}</span>
-                                            <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorNewNodeDescription")}</span>
-                                        </Radio>
-                                    </Radio.Group>
+                                <Form.Item label={t("config.preferences.generationShortcut")} className="mb-4">
+                                    <Select
+                                        value={config.generationShortcut}
+                                        options={[
+                                            { value: "mod+enter", label: generationShortcutLabel() },
+                                            { value: "disabled", label: t("config.preferences.generationShortcutDisabled") },
+                                        ]}
+                                        onChange={(value) => updateConfig("generationShortcut", value as GenerationShortcut)}
+                                    />
+                                    <div className="mt-1 text-xs opacity-60">{t("config.preferences.generationShortcutDescription")}</div>
                                 </Form.Item>
                                 <Form.Item className="mb-4">
                                     <div className="flex items-center justify-between gap-3">

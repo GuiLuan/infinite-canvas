@@ -6,7 +6,8 @@ import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
+import { serializePromptEditor } from "@/lib/canvas/serialize-prompt-editor";
+import { isGenerationShortcut, isImeComposing, type GenerationShortcut } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 
@@ -15,6 +16,7 @@ type Props = {
     references: CanvasResourceReference[];
     onChange: (value: string) => void;
     onSubmit?: () => void;
+    generationShortcut?: GenerationShortcut;
     className?: string;
     style?: CSSProperties;
     placeholder?: string;
@@ -31,7 +33,7 @@ type Token =
 
 // Prompt-panel contentEditable input: @ references embed thumbnail chips instead of plain label text.
 // Serialization converts chips back to reference labels so the generated value matches the former textarea semantics.
-export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder }: Props) {
+export function CanvasPromptChipInput({ value, references, onChange, onSubmit, generationShortcut = "mod+enter", className, style, placeholder }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
@@ -58,7 +60,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
     // Rebuild the DOM from value when unfocused, or when a focused value is an external change rather than an emitted echo.
     useEffect(() => {
         const editor = editorRef.current;
-        if (!editor) return;
+        if (!editor || composingRef.current) return;
         if (document.activeElement === editor && value === lastEmittedRef.current) return;
         editor.textContent = "";
         tokens.forEach((token) => {
@@ -153,7 +155,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                 }}
                 onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                     event.stopPropagation();
-                    if (isImeComposing(event)) return;
+                    if (composingRef.current || isImeComposing(event)) return;
                     if (mention && candidates.length) {
                         if (event.key === "ArrowDown") {
                             event.preventDefault();
@@ -165,7 +167,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                             setActiveIndex((index) => (index - 1 + candidates.length) % candidates.length);
                             return;
                         }
-                        if (event.key === "Enter") {
+                        if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
                             event.preventDefault();
                             insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
                             return;
@@ -181,9 +183,13 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                         requestAnimationFrame(syncFromEditor);
                         return;
                     }
-                    if (isPlainEnterKey(event) && onSubmit) {
+                    if (isGenerationShortcut(event, generationShortcut) && onSubmit) {
                         event.preventDefault();
                         onSubmit();
+                        return;
+                    }
+                    if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey && document.execCommand("insertText", false, "\n")) {
+                        event.preventDefault();
                         return;
                     }
                     requestAnimationFrame(syncMention);
@@ -301,20 +307,7 @@ function createReferenceChip(reference: CanvasResourceReference, theme: (typeof 
 }
 
 function serializeEditor(editor: HTMLElement) {
-    return serializeNodes(editor.childNodes).replace(/﻿/g, "");
-}
-
-function serializeNodes(nodes: NodeListOf<ChildNode>) {
-    let result = "";
-    nodes.forEach((node) => {
-        if (node.nodeType === Node.TEXT_NODE) result += node.textContent || "";
-        if (!(node instanceof HTMLElement)) return;
-        const label = node.dataset.refLabel;
-        if (label) result += label;
-        else if (node.tagName === "BR") result += "\n";
-        else result += serializeNodes(node.childNodes);
-    });
-    return result;
+    return serializePromptEditor(editor, (element) => element.dataset.refLabel);
 }
 
 function removeActiveMention() {

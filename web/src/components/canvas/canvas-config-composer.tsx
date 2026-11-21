@@ -6,8 +6,10 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { serializePromptEditor } from "@/lib/canvas/serialize-prompt-editor";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { NodeGenerationInput } from "./canvas-node-generation";
+import { isGenerationShortcut, isImeComposing, type GenerationShortcut } from "@/lib/keyboard-event";
 import { CanvasNodeReferenceBar } from "./canvas-node-reference-bar";
 import type { CanvasNodeData } from "@/types/canvas";
 
@@ -18,6 +20,8 @@ type CanvasConfigComposerProps = {
     inputs: NodeGenerationInput[];
     connectedNodes?: CanvasNodeData[];
     onChange: (value: string) => void;
+    onSubmit?: () => void;
+    generationShortcut?: GenerationShortcut;
     onClose: () => void;
     onDisconnectReference?: (fromNodeId: string, toNodeId: string) => void;
     onStartReferenceSelection?: (nodeId: string) => void;
@@ -33,7 +37,7 @@ type MentionState = {
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNodes = [], onChange, onClose, onDisconnectReference, onStartReferenceSelection }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNodes = [], onChange, onSubmit, generationShortcut = "mod+enter", onClose, onDisconnectReference, onStartReferenceSelection }: CanvasConfigComposerProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
@@ -51,9 +55,8 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
     }, [inputs, mention]);
 
     useEffect(() => {
-        if (document.activeElement === editorRef.current) return;
         const editor = editorRef.current;
-        if (!editor) return;
+        if (!editor || composingRef.current || (document.activeElement === editor && serializeEditor(editor) === value)) return;
         editor.textContent = "";
         tokens.forEach((token) => {
             if (token.type === "text") {
@@ -62,6 +65,7 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
             }
             const input = referenceById.get(token.nodeId);
             if (input) editor.append(createReferenceChip(input, inputs, theme, setImagePreview));
+            else editor.append(document.createTextNode(`@[node:${token.nodeId}]`));
         });
     }, [inputs, referenceById, theme, tokens]);
 
@@ -151,6 +155,7 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
                     }}
                     onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                         event.stopPropagation();
+                        if (composingRef.current || isImeComposing(event)) return;
                         if (mention && candidates.length) {
                             if (event.key === "ArrowDown") {
                                 event.preventDefault();
@@ -162,7 +167,7 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
                                 setActiveIndex((index) => (index - 1 + candidates.length) % candidates.length);
                                 return;
                             }
-                            if (event.key === "Enter") {
+                            if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
                                 event.preventDefault();
                                 insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
                                 return;
@@ -173,9 +178,18 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
                                 return;
                             }
                         }
+                        if (onSubmit && isGenerationShortcut(event, generationShortcut)) {
+                            event.preventDefault();
+                            onSubmit();
+                            return;
+                        }
                         if ((event.key === "Backspace" || event.key === "Delete") && deleteAdjacentReference(event.key)) {
                             event.preventDefault();
                             requestAnimationFrame(syncFromEditor);
+                            return;
+                        }
+                        if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey && document.execCommand("insertText", false, "\n")) {
+                            event.preventDefault();
                             return;
                         }
                         requestAnimationFrame(syncMention);
@@ -271,20 +285,10 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
 }
 
 function serializeEditor(editor: HTMLElement) {
-    return serializeNodes(editor.childNodes).replace(/\uFEFF/g, "");
-}
-
-function serializeNodes(nodes: NodeListOf<ChildNode>) {
-    let result = "";
-    nodes.forEach((node) => {
-        if (node.nodeType === Node.TEXT_NODE) result += node.textContent || "";
-        if (!(node instanceof HTMLElement)) return;
-        const nodeId = node.dataset.referenceNodeId;
-        if (nodeId) result += `@[node:${nodeId}]`;
-        else if (node.tagName === "BR") result += "\n";
-        else result += serializeNodes(node.childNodes);
+    return serializePromptEditor(editor, (element) => {
+        const nodeId = element.dataset.referenceNodeId;
+        return nodeId ? `@[node:${nodeId}]` : undefined;
     });
-    return result;
 }
 
 function removeActiveMention() {

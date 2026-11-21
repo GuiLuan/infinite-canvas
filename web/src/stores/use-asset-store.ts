@@ -32,8 +32,15 @@ type AssetStore = {
     updateAsset: (id: string, patch: Partial<Omit<Asset, "id" | "createdAt">>) => void;
     removeAsset: (id: string) => void;
     replaceAssets: (assets: Asset[]) => void;
-    cleanupImages: (extra?: unknown) => void;
+    cleanupImages: (removedData: unknown) => void;
 };
+
+const mediaReferences = new Set<() => unknown>();
+
+export function trackMediaReferences(read: () => unknown) {
+    mediaReferences.add(read);
+    return () => { mediaReferences.delete(read); };
+}
 
 // 卡片用缩略图渲染，自定义封面（远程地址或单独上传的封面）保持原样。
 export function assetCoverUrl(asset: Asset) {
@@ -89,17 +96,17 @@ export const useAssetStore = create<AssetStore>()(
                 })),
             removeAsset: (id) =>
                 set((state) => {
-                    const assets = state.assets.filter((asset) => asset.id !== id);
-                    get().cleanupImages({ assets });
-                    return { assets };
+                    const removed = state.assets.find((asset) => asset.id === id);
+                    get().cleanupImages(removed);
+                    return { assets: state.assets.filter((asset) => asset.id !== id) };
                 }),
             replaceAssets: (assets) => set({ assets }),
-            cleanupImages: (extra) => {
-                window.setTimeout(async () => {
-                    const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
-                    await cleanupUnusedImages({ assets: get().assets, projects: useCanvasStore.getState().projects, extra });
-                    await cleanupUnusedMedia({ assets: get().assets, projects: useCanvasStore.getState().projects, extra });
-                }, 0);
+            cleanupImages: (removedData) => {
+                void import("@/stores/canvas/use-canvas-store").then(({ useCanvasStore }) => {
+                    if (!get().hydrated || !useCanvasStore.getState().hydrated) return;
+                    const readUsed = () => ({ assets: get().assets, projects: useCanvasStore.getState().projects, live: [...mediaReferences].map((read) => read()) });
+                    return Promise.all([cleanupUnusedImages(readUsed, removedData), cleanupUnusedMedia(readUsed, removedData)]);
+                }).catch((error) => console.error(error));
             },
         }),
         {

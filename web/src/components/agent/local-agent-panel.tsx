@@ -829,8 +829,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             } else if (payload.name === "canvas_apply_ops") {
                 const context = canvasContextRef.current;
                 if (!context) throw new Error(rt("openCanvasFirst"));
-                result = context.applyOps(appliedOps);
-                void postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
+                const snapshot = context.applyOps(appliedOps);
+                void postState(endpoint, token, clientIdRef.current, snapshot);
+                const awaitingUser = appliedOps.some((op) => op.type === "run_generation" && snapshot.nodes.some((node) => node.id === op.nodeId));
+                result = awaitingUser ? { ...snapshot, awaitingUser, run: false } : snapshot;
             } else if (payload.name === "canvas_create_attachment_nodes") {
                 const context = canvasContextRef.current;
                 if (!context) throw new Error(rt("openCanvasFirst"));

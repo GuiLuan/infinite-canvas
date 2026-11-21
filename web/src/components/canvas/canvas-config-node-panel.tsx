@@ -11,6 +11,7 @@ import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
+import { latestRetryBatch } from "@/lib/canvas/canvas-generation-history";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 
 type CanvasConfigNodePanelProps = {
@@ -20,20 +21,24 @@ type CanvasConfigNodePanelProps = {
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     onStop: (nodeId: string) => void;
+    onRetry: (node: CanvasNodeData, mode: CanvasGenerationMode) => void;
+    unreadyImages: string[];
     onComposerToggle: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onRetry, unreadyImages: incomingUnreadyImages, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode || "image";
+    const unreadyImages = mode === "audio" ? [] : incomingUnreadyImages;
     const config = buildNodeConfig(globalConfig, node, mode);
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
-    const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
-    const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
+    const canGenerate = !unreadyImages.length && (hasComposerContent || inputSummary.textCount > 0 || (mode !== "audio" && inputSummary.imageCount > 0));
+    const retry = latestRetryBatch(node, mode);
+    const hasResult = node.metadata?.generationBatches?.some((batch) => batch.snapshot?.mode === mode && batch.slots.some((slot) => slot.status === "success"));
 
     return (
         <div className="flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
@@ -111,9 +116,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 )}
             </div>
 
+            {unreadyImages.length > 0 && <div className="truncate text-[11px] opacity-60" title={unreadyImages.join("、")}>{t("canvas.promptPanel.incomingImagesNotReady", { names: unreadyImages.join("、") })}</div>}
+            <div className="mt-auto flex gap-1">
             <Button
                 type="primary"
-                className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
+                className="!h-9 !min-w-0 !flex-1 !cursor-pointer !rounded-lg"
                 danger={isRunning}
                 disabled={!isRunning && !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
@@ -129,11 +136,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     ) : (
                         <>
                             <Play className="size-4" />
-                            <span>{t("canvas.configNode.generate")}</span>
+                            <span>{t(hasResult ? "canvas.promptPanel.regenerate" : "canvas.promptPanel.generate")}</span>
                         </>
                     )}
                 </span>
             </Button>
+            {!isRunning && retry && <Button type="text" onMouseDown={(event) => event.stopPropagation()} onClick={() => onRetry(node, mode)}>{t("common.retry")}</Button>}
+            </div>
         </div>
     );
 }

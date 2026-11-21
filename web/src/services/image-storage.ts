@@ -60,10 +60,11 @@ async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<Uploa
         throwIfAborted(options?.signal);
         objectUrls.set(storageKey, url);
         await storeImagePreview(storageKey, blob);
+        throwIfAborted(options?.signal);
         return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type.startsWith("image/") ? blob.type : "" };
     } catch (error) {
         URL.revokeObjectURL(url);
-        await store.removeItem(storageKey).catch(() => undefined);
+        await Promise.allSettled([deleteStoredImages([storageKey])]);
         throw error;
     }
 }
@@ -240,8 +241,10 @@ export async function deleteStoredImages(keys: Iterable<string>) {
     );
 }
 
-export async function cleanupUnusedImages(usedData: unknown) {
-    const usedKeys = collectImageStorageKeys(usedData);
+export async function cleanupUnusedImages(readUsed: () => unknown, removedData: unknown) {
+    const candidates = collectImageStorageKeys(removedData);
+    if (!candidates.size) return;
+    const usedKeys = new Set<string>();
     await Promise.all([
         imageLogStore.iterate((value) => {
             collectImageStorageKeys(value, usedKeys);
@@ -250,15 +253,8 @@ export async function cleanupUnusedImages(usedData: unknown) {
             collectImageStorageKeys(value, usedKeys);
         }),
     ]);
-    const unused: string[] = [];
-    await store.iterate((_value, key) => {
-        if (!usedKeys.has(key)) unused.push(key);
-    });
-    const orphanPreviews: string[] = [];
-    await previewStore.iterate((_value, key) => {
-        if (!usedKeys.has(key)) orphanPreviews.push(key);
-    });
-    await Promise.all([deleteStoredImages(unused), ...orphanPreviews.map(deleteImagePreview)]);
+    collectImageStorageKeys(readUsed(), usedKeys);
+    await deleteStoredImages([...candidates].filter((key) => !usedKeys.has(key)));
 }
 
 export function collectImageStorageKeys(value: unknown, keys = new Set<string>()) {

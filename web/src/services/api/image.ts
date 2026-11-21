@@ -95,7 +95,7 @@ type GeminiPayload = {
     promptFeedback?: { blockReason?: string };
 };
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
-type RequestOptions = { signal?: AbortSignal };
+type RequestOptions = { signal?: AbortSignal; preparedPrompt?: boolean };
 
 const IMAGE_QUALITY_VALUES = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_IMAGE_SHORT_SIDE = 1024;
@@ -691,8 +691,16 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
     return images;
 }
 
+export function prepareImagePrompt(config: AiConfig, prompt: string, references: ReferenceImage[]) {
+    const model = config.model || config.imageModel;
+    const requestConfig = resolveModelRequestConfig(config, model);
+    const input = references.length ? buildImageReferencePromptText(prompt, references) : prompt;
+    return requestConfig.apiFormat === "gemini" && !resolveModelScript(config, model) ? input : withSystemPrompt(requestConfig, input);
+}
+
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    const requestPrompt = options?.preparedPrompt ? prompt : prepareImagePrompt(config, prompt, []);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
@@ -704,7 +712,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 capability: "image",
                 script,
                 config: requestConfig,
-                prompt: withSystemPrompt(requestConfig, prompt),
+                prompt: requestPrompt,
                 images: [],
                 params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
@@ -716,7 +724,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
     if (requestConfig.apiFormat === "gemini") {
         try {
-            return await requestGeminiImages(requestConfig, prompt, [], n, options);
+            return await requestGeminiImages(requestConfig, requestPrompt, [], n, options);
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
@@ -729,7 +737,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             aiApiUrl(requestConfig, "/images/generations"),
             {
                 model: requestConfig.model,
-                prompt: withSystemPrompt(requestConfig, prompt),
+                prompt: requestPrompt,
                 n,
                 ...(quality ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),
@@ -754,7 +762,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const requestPrompt = buildImageReferencePromptText(prompt, references);
+    const requestPrompt = options?.preparedPrompt ? prompt : prepareImagePrompt(config, prompt, references);
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
@@ -766,7 +774,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 capability: "image",
                 script,
                 config: requestConfig,
-                prompt: withSystemPrompt(requestConfig, requestPrompt),
+                prompt: requestPrompt,
                 images: refs,
                 params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
@@ -789,7 +797,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const background = normalizeBackground(config.background);
     const formData = new FormData();
     formData.set("model", requestConfig.model);
-    formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
+    formData.set("prompt", requestPrompt);
     formData.set("n", String(n));
     // gpt-image models reject response_format; they always return b64.
     if (!/gpt-image/.test(requestConfig.model)) {

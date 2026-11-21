@@ -1,3 +1,7 @@
+import type { AiConfig, ModelChannel } from "@/stores/use-config-store";
+import type { ReferenceImage } from "@/types/image";
+import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
+
 export type Position = {
     x: number;
     y: number;
@@ -44,7 +48,37 @@ export type CanvasNodeText = {
     content: string;
 };
 
+export type CanvasGenerationSnapshot = {
+    mode: CanvasGenerationMode;
+    input: string;
+    prompt: string;
+    model: string;
+    channel: Omit<ModelChannel, "apiKey">;
+    settings: Partial<Pick<AiConfig, "size" | "quality" | "background" | "reasoningEffort" | "systemPrompt" | "videoSeconds" | "vquality" | "videoGenerateAudio" | "videoWatermark" | "videoMode" | "audioVoice" | "audioFormat" | "audioSpeed" | "audioInstructions">>;
+    count: number;
+    referenceImages: ReferenceImage[];
+    referenceVideos: ReferenceVideo[];
+    referenceAudios: ReferenceAudio[];
+};
+
+export type CanvasGenerationSlot = Pick<CanvasNodeMetadata, "storageKey" | "naturalWidth" | "naturalHeight" | "bytes" | "mimeType" | "durationMs" | "errorDetails"> & {
+    id: string;
+    content: string;
+    status: "loading" | "success" | "error" | "cancelled";
+    videoTask?: { id: string; provider: "openai" | "gemini" };
+};
+
+export type CanvasGenerationBatch = {
+    id: string;
+    originId?: string;
+    snapshot?: CanvasGenerationSnapshot;
+    slots: CanvasGenerationSlot[];
+};
+
 export type CanvasNodeMetadata = {
+    generationBatches?: CanvasGenerationBatch[];
+    currentResultId?: string;
+    generationOutputs?: Partial<Record<CanvasGenerationMode, string>>;
     content?: string;
     composerContent?: string;
     prompt?: string;
@@ -54,6 +88,7 @@ export type CanvasNodeMetadata = {
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
     model?: string;
+    systemPrompt?: string;
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";
     size?: string;
     quality?: string;

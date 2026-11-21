@@ -1,8 +1,7 @@
 import { create } from "zustand";
 
-// The Agent panel dispatches commands through this store to set workbench prompts and optionally start generation.
-// The panel writes model, quality, size, count, and other options to use-config-store, which workbench pages read directly.
-// Prompt and run are sent here; pages identify new commands by nonce and call clear after consuming them.
+// Agent commands stage workbench input. `run` requests a trackable task that waits for manual submission.
+// Workbench pages read the model and other settings directly from use-config-store.
 
 export type WorkbenchCommand = {
     nonce: number;

@@ -2,6 +2,7 @@ import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/store
 import i18n from "@/i18n";
 import { ensureImagePreview, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
+import { generationHistoryStatus, hydrateGenerationBatches } from "./canvas-generation-history";
 import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
@@ -45,6 +46,7 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
 export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
     return Promise.all(
         nodes.map(async (node) => {
+            if (node.metadata?.generationBatches?.length) return hydrateGenerationBatches(node);
             const metadata = node.metadata;
             const content = metadata?.content;
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && metadata?.storageKey) return { ...node, metadata: { ...metadata, content: await resolveMediaUrl(metadata.storageKey, content) } };
@@ -106,6 +108,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     return {
         ...config,
         model: resolveModelForCapability(config, node?.metadata?.model, mode),
+        systemPrompt: node?.metadata?.systemPrompt ?? config.systemPrompt,
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
         size: node?.metadata?.size || config.size || defaultConfig.size,
@@ -128,22 +131,17 @@ export function hasResumableVideoTask(node: CanvasNodeData) {
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
-    return nodes.map((node) =>
-        node.metadata?.status === "loading"
-            ? hasResumableVideoTask(node)
-                ? node
-                : {
-                      ...node,
-                      metadata: {
-                          ...node.metadata,
-                          status: "error" as const,
-                          errorDetails: i18n.t("canvas.generation.interrupted"),
-                          images: node.metadata.images?.map((image) => (image.status === "loading" ? { ...image, status: "error" as const, errorDetails: i18n.t("canvas.generation.interrupted") } : image)),
-                          texts: node.metadata.texts?.map((text) => (text.status === "loading" ? { ...text, status: "error" as const, errorDetails: i18n.t("canvas.generation.interrupted") } : text)),
-                      },
-                  }
-            : node,
-    );
+    const resumable = new Set(nodes.filter((node) => node.type === CanvasNodeType.Video).flatMap((node) => node.metadata?.generationBatches?.flatMap((batch) => batch.slots.filter((slot) => slot.status === "loading" && slot.videoTask).map((slot) => slot.id)) || []));
+    const errorDetails = i18n.t("canvas.generation.interrupted");
+    return nodes.map((node) => {
+        const history = node.metadata?.generationBatches;
+        if (history?.length) {
+            const generationBatches = history.map((batch) => ({ ...batch, slots: batch.slots.map((slot) => slot.status === "loading" && !resumable.has(slot.id) ? { ...slot, status: "error" as const, errorDetails } : slot) }));
+            return { ...node, metadata: { ...node.metadata, generationBatches, ...generationHistoryStatus(generationBatches) } };
+        }
+        if (node.metadata?.status !== "loading" || hasResumableVideoTask(node)) return node;
+        return { ...node, metadata: { ...node.metadata, status: "error", errorDetails } };
+    });
 }
 
 export function isGenerationCanceled(error: unknown) {

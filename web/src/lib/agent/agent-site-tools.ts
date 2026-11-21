@@ -184,7 +184,7 @@ function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     const run = input.run !== false;
     navigate("/image");
     const taskId = useWorkbenchAgentStore.getState().dispatchImage({ prompt, run });
-    return { ok: true, navigated: "/image", prompt, run, taskId, applied, note: siteText(run ? "imageGenerationStarted" : "imageConfigApplied") };
+    return { ok: true, navigated: "/image", prompt, run: false, awaitingUser: run, taskId, applied, note: siteText(run ? "imageGenerationStarted" : "imageConfigApplied") };
 }
 
 function getVideoConfig() {
@@ -249,7 +249,7 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     const run = input.run !== false;
     navigate("/video");
     const taskId = useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run });
-    return { ok: true, navigated: "/video", prompt, run, taskId, applied, note: siteText(run ? "videoGenerationStarted" : "videoConfigApplied") };
+    return { ok: true, navigated: "/video", prompt, run: false, awaitingUser: run, taskId, applied, note: siteText(run ? "videoGenerationStarted" : "videoConfigApplied") };
 }
 
 async function searchPrompts(input: SiteToolInput) {

@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Copy, Download, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Download, Group, Image as ImageIcon, Info, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { Button, Tooltip } from "antd";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { pickImageSource } from "@/lib/image-thumbnail";
 import { previewUrlFor, subscribeImagePreviews, getImagePreviewRevision } from "@/services/image-storage";
+import { useGenerationDetails } from "@/hooks/use-generation-details";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import type { CanvasNodeResizeMeta, ResizeCorner } from "@/lib/canvas/canvas-node-alignment";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
-import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeText, type Position } from "@/types/canvas";
+import { CanvasNodeType, type CanvasGenerationBatch, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeText, type Position } from "@/types/canvas";
 import type { CanvasNodeContext, CanvasPluginHost } from "@/types/canvas-plugin";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useTranslation } from "react-i18next";
@@ -135,7 +137,10 @@ export const CanvasNode = React.memo(function CanvasNode({
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content);
     const isGroup = data.type === CanvasNodeType.Group;
-    const batchCount = data.type === CanvasNodeType.Image ? data.metadata?.images?.length || 0 : data.type === CanvasNodeType.Text ? data.metadata?.texts?.length || 0 : 0;
+    const history = data.metadata?.generationBatches;
+    const batchCount = history?.length
+        ? data.type === CanvasNodeType.Image ? history.reduce((count, batch) => count + batch.slots.length, 0) : Math.max(history.length, ...history.map((batch) => batch.slots.length))
+        : (data.type === CanvasNodeType.Image ? data.metadata?.images?.length : data.type === CanvasNodeType.Text ? data.metadata?.texts?.length : 0) || 0;
     const isBatchRoot = batchCount > 1;
     // Nodes with the interaction/move toggle ignore content pointer events in move mode and allow interaction in interactive mode.
     // forceInteractive states such as editing stay interactive, as do empty nodes so their upload and generation actions remain usable.
@@ -411,7 +416,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 }}
             >
                 <div
-                    className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${isBatchRoot ? "overflow-visible" : "overflow-hidden"}`}
+                    className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${isBatchRoot || batchExpanded ? "overflow-visible" : "overflow-hidden"}`}
                     style={
                         {
                             background: isGroup ? "transparent" : hasImageContent || hasVideoContent || transparentBg ? "transparent" : theme.node.fill,
@@ -466,7 +471,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
             {/* Counter-scale the panel so its on-screen size stays constant while the canvas zooms. */}
             {showPanel && !isGroup && renderPanel ? (
-                <div className="absolute left-1/2 top-full z-[70] w-[600px] pt-4" style={{ transform: `translateX(-50%) scale(${1 / scale})`, transformOrigin: "top center" }} data-node-panel={data.id}>
+                <div className="absolute left-1/2 top-full z-[70] w-[min(600px,calc(100cqw-1rem))] pt-4" style={{ transform: `translateX(-50%) scale(${1 / scale})`, transformOrigin: "top center" }} data-node-panel={data.id}>
                     {renderPanel(data)}
                 </div>
             ) : null}
@@ -475,11 +480,25 @@ export const CanvasNode = React.memo(function CanvasNode({
 });
 
 function NodeContent(props: NodeContentRendererProps) {
-    if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
-    if (props.isBatchRoot && props.node.type === CanvasNodeType.Image) return <ImageNodeContent {...props} />;
-    if (props.node.type === CanvasNodeType.Text && props.node.metadata?.texts?.length && (props.node.metadata.status !== "error" || props.node.metadata.texts.some((text) => text.content))) return <TextContent {...props} />;
+    const { node, renderNodeContent, isEditingContent } = props;
+    const history = node.metadata?.generationBatches;
+    if (node.type === CanvasNodeType.Image && (props.isBatchRoot || history?.length)) return <ImageNodeContent {...props} />;
+    const configContent = node.type === CanvasNodeType.Config && renderNodeContent;
+    if (history?.length) {
+        const Renderer = nodeContentRenderers[node.type as CanvasNodeType];
+        const definition = getNodeDefinition(node.type);
+        const PluginContent = definition?.Content;
+        const content = configContent ? configContent(node)
+            : !node.metadata?.currentResultId && !node.metadata?.content && !isEditingContent ? <GenerationStatus node={node} history={history} />
+            : Renderer ? <Renderer {...props} />
+            : PluginContent && props.pluginContext ? <PluginContent ctx={props.pluginContext} />
+            : null;
+        return <GenerationHistory {...props} history={history}>{content}</GenerationHistory>;
+    }
+    if (configContent) return configContent(node);
+    if (node.type === CanvasNodeType.Text && node.metadata?.texts?.length && (node.metadata.status !== "error" || node.metadata.texts.some((text) => text.content))) return <TextContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
-    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
+    if (node.metadata?.status === "error") return <ErrorContent node={node} theme={props.theme} onRetry={node.type === CanvasNodeType.Video && node.metadata.videoTaskId && !node.metadata.content ? props.onRetry : undefined} />;
 
     const Renderer = nodeContentRenderers[props.node.type as CanvasNodeType];
     if (Renderer) return <Renderer {...props} />;
@@ -491,6 +510,67 @@ function NodeContent(props: NodeContentRendererProps) {
         return <PluginContent ctx={props.pluginContext} />;
     }
     return <MissingPluginContent theme={props.theme} type={props.node.type} />;
+}
+
+function GenerationStatus({ node, history }: { node: CanvasNodeData; history: CanvasGenerationBatch[] }) {
+    const { t } = useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    if (node.metadata?.status === "loading") return <LoadingContent theme={theme} />;
+    const lastSlot = history.at(-1)?.slots[0];
+    return <div className="px-5 text-center text-xs" style={{ color: theme.node.text }}>{lastSlot?.errorDetails || t(lastSlot?.status === "cancelled" ? "common.requestCanceled" : "apiErrors.noContent")}</div>;
+}
+
+function GenerationHistory({ node, theme, history, batchExpanded, onToggleBatch, onSetBatchPrimary, onDownloadBatchImage, onRetryBatchImage, onDeleteBatchImage, children }: NodeContentRendererProps & { history: CanvasGenerationBatch[]; children: ReactNode }) {
+    const { t } = useTranslation();
+    const { holder, show } = useGenerationDetails();
+    const [batchId, setBatchId] = useState<string>();
+    const selected = history.find((batch) => batch.id === batchId) || history.at(-1)!;
+    const busy = node.metadata?.status === "loading";
+    return (
+        <BatchFrame batchCount={history.length} batchExpanded={batchExpanded}>
+            {holder}
+            {children}
+            <button type="button" aria-expanded={batchExpanded} className="absolute right-2.5 top-2.5 z-30 flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleBatch?.(); }}>
+                {t("canvas.controls.generations", { count: history.length })}
+                <ChevronRight className={`size-3.5 ${batchExpanded ? "rotate-90" : ""}`} />
+            </button>
+            {batchExpanded && <div className="absolute bottom-full right-0 z-40 mb-2 w-72 rounded-xl border p-2" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+                <BatchSelector history={history} selectedId={selected.id} onSelect={setBatchId} />
+                <div className="thin-scrollbar mt-2 max-h-64 space-y-1 overflow-auto">
+                    {selected.slots.map((slot, index) => {
+                        const current = node.metadata?.currentResultId === slot.id;
+                        const success = slot.status === "success";
+                        const status = success ? "workbench.success" : slot.status === "loading" ? "canvas.node.generating" : slot.status === "cancelled" ? "common.requestCanceled" : "canvas.node.failed";
+                        return <div key={slot.id} className="rounded-lg px-2 py-1" style={{ background: current ? theme.toolbar.activeBg : undefined }}>
+                            <div className="flex items-center gap-1">
+                                <span className="mr-auto text-xs" title={slot.errorDetails}>{index + 1}. {t(status)}</span>
+                                <Button type="text" size="small" title={t("common.details")} icon={<Info className="size-3.5" />} onClick={() => void show(selected.snapshot)} />
+                                {success && node.type !== CanvasNodeType.Config && <>
+                                    <Button type="text" size="small" disabled={current} title={t("canvas.generation.setPrimary")} icon={<Star className="size-3.5" />} onClick={() => onSetBatchPrimary?.(slot.id)} />
+                                    <Button type="text" size="small" title={t("common.download")} icon={<Download className="size-3.5" />} onClick={() => onDownloadBatchImage?.(slot.id)} />
+                                </>}
+                                {selected.snapshot && !success && slot.status !== "loading" && <Button type="text" size="small" disabled={busy} title={t("canvas.node.retry")} icon={<RefreshCw className="size-3.5" />} onClick={() => onRetryBatchImage?.(slot.id)} />}
+                                <Button type="text" size="small" disabled={busy} title={t("common.delete")} icon={<Trash2 className="size-3.5" />} onClick={() => onDeleteBatchImage?.(slot.id)} />
+                            </div>
+                            {node.type === CanvasNodeType.Text && slot.content && <p className="line-clamp-2 whitespace-pre-wrap break-words text-xs opacity-75">{slot.content}</p>}
+                        </div>;
+                    })}
+                </div>
+            </div>}
+        </BatchFrame>
+    );
+}
+
+function BatchSelector({ history, selectedId, onSelect, includeAll = false }: { history: CanvasGenerationBatch[]; selectedId: string; onSelect: (id: string) => void; includeAll?: boolean }) {
+    const { t } = useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    return <span className="relative inline-flex max-w-full items-center">
+        <select aria-label={t("canvas.generation.batch")} className="max-w-full appearance-none rounded-md py-1 pl-2 pr-8 text-xs" style={{ background: theme.toolbar.panel, color: theme.node.text }} value={selectedId} onChange={(event) => onSelect(event.target.value)}>
+            {includeAll && <option value="">{t("common.all")}</option>}
+            {history.map((batch, index) => <option key={batch.id} value={batch.id}>{batch.snapshot ? t("canvas.generation.batchNumber", { number: index + 1 }) : `${index + 1}. ${t("canvas.generation.original")}`}</option>)}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 size-3.5" />
+    </span>;
 }
 
 const nodeContentRenderers = {
@@ -532,19 +612,19 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
     return (
         <div className="flex max-w-[260px] flex-col items-center gap-3 px-5 text-center">
             <div className="text-xs leading-5 text-red-300">{node.metadata?.errorDetails || t("canvas.node.failed")}</div>
-            <button
+            {onRetry && <button
                 type="button"
                 className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02]"
                 style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
                 onClick={(event) => {
                     event.stopPropagation();
-                    onRetry?.(node);
+                    onRetry(node);
                 }}
                 onMouseDown={(event) => event.stopPropagation()}
             >
                 <RefreshCw className="size-3.5" />
-                {t("canvas.node.retry")}
-            </button>
+                {t("canvas.nodeToolbar.queryVideoTask")}
+            </button>}
         </div>
     );
 }
@@ -564,7 +644,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
-    const texts = node.metadata?.texts || [];
+    const texts = node.metadata?.generationBatches?.length ? [] : node.metadata?.texts || [];
     const batchCount = texts.length;
     const isBatchRoot = batchCount > 1;
     const primaryTextId = node.metadata?.primaryTextId || texts[0]?.id;
@@ -589,6 +669,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                         references={mentionReferences}
                         highlightLabels={false}
                         onChange={(value) => onContentChange(node.id, value)}
+                        generationShortcut="disabled"
                         onBlur={onStopEditing}
                         onKeyDown={(event) => {
                             if (event.key === "Escape") onStopEditing();
@@ -692,7 +773,7 @@ function TextSlotStatus({ text }: { text: CanvasNodeText }) {
 }
 
 function ImageNodeContent(props: NodeContentRendererProps) {
-    if (!props.node.metadata?.content && !props.isBatchRoot) return <EmptyImageContent {...props} />;
+    if (!props.node.metadata?.content && !props.isBatchRoot && !props.node.metadata?.generationBatches?.length) return <EmptyImageContent {...props} />;
 
     return (
         <ImageContent
@@ -779,14 +860,32 @@ function ImageContent({
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
+    const { holder, show } = useGenerationDetails();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const images = node.metadata?.images || [];
-    const batchCount = images.length;
-    const isBatchRoot = batchCount > 1;
-    const primaryImageId = node.metadata?.primaryImageId || images[0]?.id;
-    const primaryImage = images.find((image) => image.id === primaryImageId);
-    const primaryContent = primaryImage?.content || node.metadata?.content;
-    const primaryPreviewUrl = previewUrlFor(primaryImage?.storageKey || node.metadata?.storageKey);
+    const history = node.metadata?.generationBatches || [];
+    const [selectedBatchId, setSelectedBatchId] = useState<string>();
+    const selectedBatch = history.find((batch) => batch.id === selectedBatchId);
+    const historySlots = history.flatMap((batch) => batch.slots);
+    const images: CanvasNodeImage[] = historySlots.length ? historySlots.map((slot) => ({ id: slot.id, status: slot.status === "loading" ? "loading" : slot.status === "success" ? "success" : "error", errorDetails: slot.status === "cancelled" ? t("common.requestCanceled") : slot.errorDetails, content: slot.content, storageKey: slot.storageKey, naturalWidth: slot.naturalWidth || 0, naturalHeight: slot.naturalHeight || 0, bytes: slot.bytes || 0, mimeType: slot.mimeType || "image/png" })) : node.metadata?.images || [];
+    const visibleImages = batchExpanded && selectedBatch ? images.filter((image) => selectedBatch.slots.some((slot) => slot.id === image.id)) : images;
+    const currentId = node.metadata?.currentResultId || node.metadata?.primaryImageId;
+    const primaryImage = visibleImages.find((image) => image.id === currentId) || visibleImages.find((image) => image.status === "success") || visibleImages[0];
+    const primaryBatch = history.find((batch) => batch.slots.some((slot) => slot.id === primaryImage?.id));
+    const expandedImages = visibleImages.filter((image) => image.id !== primaryImage?.id);
+    const visibleCount = visibleImages.length;
+    const primaryContent = primaryImage ? primaryImage.content : node.metadata?.content;
+    const primaryPreviewUrl = previewUrlFor(primaryImage ? primaryImage.storageKey : node.metadata?.storageKey);
+    const toggleBatch = () => {
+        if (batchExpanded) setSelectedBatchId(undefined);
+        onToggleBatch?.();
+    };
+    const selectBatch = (id: string) => {
+        setSelectedBatchId(id);
+        const batch = history.find((item) => item.id === id);
+        const slot = batch?.slots.find((item) => item.id === currentId)
+            || batch?.slots.find((item) => item.status === "success") || batch?.slots[0];
+        if (slot) onSetBatchPrimary?.(slot.id);
+    };
     const primarySource = primaryContent
         ? pickImageSource({
               previewUrl: primaryPreviewUrl,
@@ -800,12 +899,21 @@ function ImageContent({
         : undefined;
 
     return (
-        <BatchFrame batchCount={batchCount} batchExpanded={batchExpanded}>
-            {batchExpanded
-                ? images
-                      .filter((image) => image.id !== primaryImageId)
-                      .map((image, index) => <ExpandedImageCard key={image.id} node={node} image={image} index={index} scale={scale} onView={() => onViewBatchImage?.(image.id)} onSetPrimary={() => onSetBatchPrimary?.(image.id)} onDuplicate={() => onDuplicateBatchImage?.(image.id)} onDownload={() => onDownloadBatchImage?.(image.id)} onRetry={() => onRetryBatchImage?.(image.id)} onDelete={() => onDeleteBatchImage?.(image.id)} />)
-                : null}
+        <>
+        {holder}
+        <BatchFrame batchCount={visibleCount} batchExpanded={batchExpanded}>
+            {batchExpanded && expandedImages.map((image, index) => {
+                const snapshot = history.find((batch) => batch.slots.some((slot) => slot.id === image.id))?.snapshot;
+                return <ExpandedImageCard key={image.id} node={node} image={image} index={index} count={visibleCount} scale={scale}
+                    onView={() => onViewBatchImage?.(image.id)} onSetPrimary={() => onSetBatchPrimary?.(image.id)} onDuplicate={() => onDuplicateBatchImage?.(image.id)} onDownload={() => onDownloadBatchImage?.(image.id)}
+                    onRetry={snapshot ? () => onRetryBatchImage?.(image.id) : undefined} onDelete={() => onDeleteBatchImage?.(image.id)} onDetails={snapshot ? () => void show(snapshot) : undefined} />;
+            })}
+            {batchExpanded && (history.length > 1 || visibleCount <= 1) && (
+                <div className="absolute bottom-2 left-2 z-40 flex max-w-[80%] items-center gap-1" onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+                    {history.length > 1 && <BatchSelector history={history} selectedId={selectedBatch?.id || ""} includeAll onSelect={selectBatch} />}
+                    {visibleCount <= 1 && <ImageSlotAction label={t("canvas.node.batchExpanded")} onClick={toggleBatch}><ChevronDown className="size-3.5 rotate-180" /></ImageSlotAction>}
+                </div>
+            )}
             <div className="h-full w-full overflow-hidden rounded-3xl">
                 {primaryContent ? (
                     <img
@@ -819,39 +927,42 @@ function ImageContent({
                     <ImageSlotStatus image={primaryImage} />
                 )}
             </div>
-            {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
+            {primaryImage?.status === "error" ? <BatchImageFailureActions onRetry={primaryBatch?.snapshot ? () => onRetryBatchImage?.(primaryImage.id) : undefined} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} onDetails={primaryBatch?.snapshot ? () => void show(primaryBatch.snapshot) : undefined} /> : null}
             {primaryImage?.content ? (
-                <button type="button" className="pointer-events-none absolute left-2.5 top-2.5 z-30 flex h-8 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium opacity-0 shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02] group-hover/node:pointer-events-auto group-hover/node:opacity-100" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownloadBatchImage?.(primaryImage.id))}>
-                    <Download className="size-3" />
-                    {t("common.download")}
-                </button>
+                <div className="pointer-events-none absolute left-2.5 top-2.5 z-30 flex gap-1 opacity-0 transition group-hover/node:pointer-events-auto group-hover/node:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+                    <ImageSlotAction label={t("common.download")} onClick={() => onDownloadBatchImage?.(primaryImage.id)}><Download className="size-3.5" /></ImageSlotAction>
+                    {primaryBatch?.snapshot && <ImageSlotAction label={t("common.details")} onClick={() => void show(primaryBatch.snapshot)}><Info className="size-3.5" /></ImageSlotAction>}
+                    {batchExpanded && primaryBatch && <ImageSlotAction label={t("common.delete")} onClick={() => onDeleteBatchImage?.(primaryImage.id)}><Trash2 className="size-3.5" /></ImageSlotAction>}
+                </div>
             ) : null}
-            {isBatchRoot ? (
+            {visibleCount > 1 ? (
                 <button
                     type="button"
                     className="absolute right-2.5 top-2.5 z-30 flex h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold shadow-[0_6px_18px_rgba(28,25,23,.16)] backdrop-blur-md transition hover:scale-[1.02]"
                     style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }}
-                    aria-label={batchExpanded ? t("canvas.node.batchExpanded") : t("canvas.node.batchCollapsed")}
+                    aria-label={`${t("canvas.controls.images", { count: visibleCount })} · ${t(batchExpanded ? "canvas.node.batchExpanded" : "canvas.node.batchCollapsed")}`}
+                    aria-expanded={batchExpanded}
                     onClick={(event) => {
                         event.stopPropagation();
-                        onToggleBatch?.();
+                        toggleBatch();
                     }}
                     onMouseDown={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
                 >
-                    <span className="leading-none">{t("canvas.controls.images", { count: batchCount })}</span>
+                    <span className="leading-none">{t("canvas.controls.images", { count: visibleCount })}</span>
                     <ChevronRight className={`size-3.5 opacity-80 transition-transform ${batchExpanded ? "rotate-90" : ""}`} />
                 </button>
             ) : null}
         </BatchFrame>
+        </>
     );
 }
 
-function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, onDuplicate, onDownload, onRetry, onDelete }: { node: CanvasNodeData; image: CanvasNodeImage; index: number; scale: number; onView: () => void; onSetPrimary: () => void; onDuplicate: () => void; onDownload: () => void; onRetry: () => void; onDelete: () => void }) {
+function ExpandedImageCard({ node, image, index, count, scale, onView, onSetPrimary, onDuplicate, onDownload, onRetry, onDelete, onDetails }: { node: CanvasNodeData; image: CanvasNodeImage; index: number; count: number; scale: number; onView: () => void; onSetPrimary: () => void; onDuplicate: () => void; onDownload: () => void; onRetry?: () => void; onDelete: () => void; onDetails?: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const count = node.metadata?.images?.length || 0;
     const columns = Math.min(count, 4);
     const rows = Math.ceil(count / columns);
     const rootSlot = (rows - 1) * columns;
@@ -899,38 +1010,37 @@ function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, on
         >
             {image.content ? <img src={source} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} />}
             {image.content ? (
-                <div className="pointer-events-none absolute inset-x-2 top-2 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/node:pointer-events-auto group-hover/node:opacity-100">
-                    <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
-                        <Download className="size-3 shrink-0" />
-                        <span className="truncate">{t("common.download")}</span>
-                    </button>
-                    <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.createCopy")} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
-                        <Copy className="size-3 shrink-0" />
-                        <span className="truncate">{t("canvas.node.createCopy")}</span>
-                    </button>
-                    <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.setPrimary")} onClick={(event) => (event.stopPropagation(), onSetPrimary())}>
-                        <Star className="size-3 shrink-0" style={{ color: selectionBlue }} />
-                        <span className="truncate">{t("canvas.node.setPrimary")}</span>
-                    </button>
+                <div className="pointer-events-none absolute inset-x-2 top-2 flex flex-wrap items-center gap-1 opacity-0 transition-opacity group-hover/node:pointer-events-auto group-hover/node:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+                    {onDetails && <ImageSlotAction label={t("common.details")} onClick={onDetails}><Info className="size-3.5" /></ImageSlotAction>}
+                    <ImageSlotAction label={t("common.delete")} onClick={onDelete}><Trash2 className="size-3.5" /></ImageSlotAction>
+                    <ImageSlotAction label={t("common.download")} onClick={onDownload}><Download className="size-3.5" /></ImageSlotAction>
+                    <ImageSlotAction label={t("canvas.node.createCopy")} onClick={onDuplicate}><Copy className="size-3.5" /></ImageSlotAction>
+                    <ImageSlotAction label={t("canvas.node.setPrimary")} onClick={onSetPrimary}><Star className="size-3.5" style={{ color: selectionBlue }} /></ImageSlotAction>
                 </div>
             ) : null}
-            {image.status === "error" ? <BatchImageFailureActions placement="right" onRetry={onRetry} onDelete={onDelete} /> : null}
+            {image.status === "error" && <BatchImageFailureActions onRetry={onRetry} onDelete={onDelete} onDetails={onDetails} />}
         </div>
     );
 }
 
-function BatchImageFailureActions({ placement, onRetry, onDelete }: { placement: "left" | "right"; onRetry: () => void; onDelete: () => void }) {
+function ImageSlotAction({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    return (
+        <Tooltip title={label} trigger={["hover", "focus"]}>
+            <button type="button" aria-label={label} className="grid size-7 shrink-0 place-items-center rounded-md border" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onClick(); }}>
+                {children}
+            </button>
+        </Tooltip>
+    );
+}
+
+function BatchImageFailureActions({ onRetry, onDelete, onDetails }: { onRetry?: () => void; onDelete: () => void; onDetails?: () => void }) {
     const { t } = useTranslation();
     return (
-        <div className={`absolute top-3 z-30 flex items-center gap-1.5 ${placement === "left" ? "left-3" : "right-3"}`}>
-            <button type="button" className="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onClick={(event) => (event.stopPropagation(), onRetry())}>
-                <RefreshCw className="size-3.5" />
-                {t("canvas.node.retry")}
-            </button>
-            <button type="button" className="grid size-8 place-items-center rounded-lg border shadow-sm transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onClick={(event) => (event.stopPropagation(), onDelete())} aria-label={t("common.delete")} title={t("common.delete")}>
-                <Trash2 className="size-3.5" />
-            </button>
+        <div className="absolute left-2.5 top-2.5 z-30 flex gap-1">
+            {onDetails && <ImageSlotAction label={t("common.details")} onClick={onDetails}><Info className="size-3.5" /></ImageSlotAction>}
+            {onRetry && <ImageSlotAction label={t("canvas.node.retry")} onClick={onRetry}><RefreshCw className="size-3.5" /></ImageSlotAction>}
+            <ImageSlotAction label={t("common.delete")} onClick={onDelete}><Trash2 className="size-3.5" /></ImageSlotAction>
         </div>
     );
 }
