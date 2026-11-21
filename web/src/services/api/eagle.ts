@@ -41,7 +41,11 @@ async function request<T>(path: string, init?: RequestInit) {
     if (token) headers.set("x-eagle-agent-token", token);
     const response = await fetch(eagleAgentRequestUrl(path), { ...init, headers });
     const body = (await response.json().catch(() => null)) as T & { error?: string } | null;
-    if (!response.ok) throw new Error(body?.error || `Eagle Agent 请求失败 (${response.status})`);
+    if (!response.ok) {
+        const error = new Error(body?.error || `Eagle Agent 请求失败 (${response.status})`);
+        Object.assign(error, { status: response.status });
+        throw error;
+    }
     return body as T;
 }
 
@@ -49,9 +53,35 @@ export async function checkEagleAgent() {
     return request<{ ok: boolean; eagle?: { version?: string; buildVersion?: string }; error?: string }>("/health");
 }
 
+export async function openCanvasInConnectedBrowser(projectId: string, nodeId: string) {
+    return request<{ ok: boolean }>("/canvas/open", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, nodeId }),
+    });
+}
+
 export async function getEagleItem(itemId: string) {
     const result = await request<{ ok: boolean; item: EagleItem }>(`/items/${encodeURIComponent(itemId)}`);
     return result.item;
+}
+
+export async function waitForEagleItem(itemId: string) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+        try {
+            return await getEagleItem(itemId);
+        } catch (error) {
+            if (!(error instanceof Error) || !("status" in error) || error.status !== 404) throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(`Eagle 尚未完成入库，已保留 Item ID ${itemId}，请稍后重试同步`);
+}
+
+export function eagleFileUrl(itemId: string, agentUrl = eagleAgentUrl(), token = eagleAgentToken()) {
+    const url = new URL(`${agentUrl.replace(/\/$/, "")}/items/${encodeURIComponent(itemId)}/file`);
+    if (token) url.searchParams.set("token", token);
+    return url.toString();
 }
 
 export function eagleThumbnailUrl(itemId: string) {

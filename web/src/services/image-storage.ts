@@ -80,7 +80,8 @@ async function fetchImageBlob(url: string, options?: ImageReadOptions) {
         controller.abort();
     }, IMAGE_DOWNLOAD_TIMEOUT_MS);
     try {
-        const response = await fetch(withLocalProxy(url), { signal: controller.signal });
+        const isEagleFile = /^https?:\/\/[^/]+\/items\/[^/]+\/file(?:\?|$)/i.test(url);
+        const response = await fetch(isEagleFile ? url : withLocalProxy(url), { signal: controller.signal });
         if (!response.ok) throw namedError(IMAGE_RESPONSE_ERROR);
         return await response.blob();
     } catch (error) {

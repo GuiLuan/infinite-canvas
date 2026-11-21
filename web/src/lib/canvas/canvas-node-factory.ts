@@ -75,6 +75,7 @@ export function cloneNodeAsTemplate(source: CanvasNodeData, templateTitle: strin
     const {
         content: _content,
         storageKey: _storageKey,
+        pendingEagleItem: _pendingEagleItem,
         images: _images,
         primaryImageId: _primaryImageId,
         texts: _texts,
@@ -99,7 +100,7 @@ export function cloneNodeAsTemplate(source: CanvasNodeData, templateTitle: strin
 
     const isConfig = source.type === CanvasNodeType.Config;
     const nextMetadata: CanvasNodeMetadata = {
-        ...preservedMetadata,
+        ...Object.fromEntries(Object.entries(preservedMetadata).filter(([key]) => !key.startsWith("eagle"))),
         ...(isConfig
             ? source.metadata?.composerContent !== undefined
                 ? { composerContent: source.metadata.composerContent }

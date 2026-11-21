@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion, type AiTextMessage } from "@/services/api/image";
 import { imageToDataUrl } from "@/services/image-storage";
+import { eagleFileUrl } from "@/services/api/eagle";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { decodeChannelModel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
@@ -36,6 +37,7 @@ type PluginHostParams = {
  */
 export function usePluginHost(params: PluginHostParams) {
     const { t } = useTranslation();
+    const [pluginSettingsNodeId, setPluginSettingsNodeId] = useState<string | null>(null);
     const { effectiveConfig, isAiConfigReady, openConfigDialog, theme, nodesRef, connectionsRef, viewportRef, setNodes, setDialogNodeId, applyAgentOps } = params;
 
     // Host capabilities available to plugin nodes; methods receive nodeId and are not bound to a specific node.
@@ -105,21 +107,34 @@ export function usePluginHost(params: PluginHostParams) {
                     .map((conn) => nodesRef.current.find((node) => node.id === conn.toNodeId))
                     .filter((node): node is CanvasNodeData => Boolean(node)),
             updateNode: (nodeId, patch) => setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, ...patch } : node))),
-            updateMetadata: (nodeId, patch) => setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...patch } } : node))),
+            updateMetadata: (nodeId, patch) => setNodes((prev) => prev.map((node) => {
+                if (node.id !== nodeId) return node;
+                const metadata = { ...node.metadata, ...patch };
+                if ((node.type === "eagle:item" || node.metadata?.eagleItemId) && patch.eagleItemId && metadata.eagleStatus === "ready") {
+                    const content = eagleFileUrl(metadata.eagleItemId!, metadata.eagleAgentUrl, metadata.eagleAgentToken);
+                    const generationBatches = metadata.generationBatches?.map((batch) => ({ ...batch, slots: batch.slots.map((slot) => slot.id === metadata.currentResultId ? { ...slot, content, storageKey: undefined, eagleItemId: metadata.eagleItemId } : slot) }));
+                    return { ...node, type: "image", metadata: { ...metadata, content, storageKey: undefined, generationBatches } };
+                }
+                return { ...node, metadata };
+            })),
             applyOps: (ops) => applyAgentOps(ops),
             ai: pluginAi,
-            openPanel: (nodeId) => setDialogNodeId(nodeId),
-            closePanel: () => setDialogNodeId(null),
+            openPanel: (nodeId) => {
+                const node = nodesRef.current.find((item) => item.id === nodeId);
+                if (node && (node.metadata?.eagleItemId || getNodeDefinition(node.type)?.useBuiltinPanel)) setPluginSettingsNodeId(nodeId);
+                else setDialogNodeId(nodeId);
+            },
+            closePanel: () => { setPluginSettingsNodeId(null); setDialogNodeId(null); },
         }),
         [applyAgentOps, pluginAi],
     );
 
     const renderPluginPanel = useCallback(
         (panelNode: CanvasNodeData) => {
-            const Panel = getNodeDefinition(panelNode.type)?.Panel;
+            const Panel = getNodeDefinition(panelNode.metadata?.eagleItemId ? "eagle:item" : panelNode.type)?.Panel;
             if (!Panel) return null;
             const ctx = buildNodeContext(pluginHost, panelNode, theme, viewportRef.current.k);
-            return <Panel ctx={ctx} onClose={() => setDialogNodeId(null)} />;
+            return <Panel ctx={ctx} onClose={() => { setPluginSettingsNodeId(null); if (!panelNode.metadata?.eagleItemId && !getNodeDefinition(panelNode.type)?.useBuiltinPanel) setDialogNodeId(null); }} />;
         },
         [pluginHost, theme],
     );
@@ -127,7 +142,7 @@ export function usePluginHost(params: PluginHostParams) {
     // Build the node toolbar from plugin items and a host-provided interaction/move toggle when enabled.
     const buildNodeToolbarItems = useCallback(
         (node: CanvasNodeData): CanvasNodeToolbarItem[] => {
-            const definition = getNodeDefinition(node.type);
+            const definition = getNodeDefinition(node.metadata?.eagleItemId ? "eagle:item" : node.type);
             const ctx = buildNodeContext(pluginHost, node, theme, viewportRef.current.k);
             const custom = definition?.toolbar?.(ctx) || [];
             // Show the interaction/move toggle only for nodes with content that are not forced into an interactive state.
@@ -151,5 +166,5 @@ export function usePluginHost(params: PluginHostParams) {
         void ensurePluginsLoaded();
     }, []);
 
-    return { pluginHost, renderPluginPanel, buildNodeToolbarItems };
+    return { pluginHost, renderPluginPanel, buildNodeToolbarItems, pluginSettingsNodeId, setPluginSettingsNodeId };
 }

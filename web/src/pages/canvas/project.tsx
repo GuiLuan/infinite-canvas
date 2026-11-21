@@ -34,7 +34,7 @@ import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
 import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, unreadyImageReferences, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
-import { addImageToEagle, checkEagleAgent, eagleItemLink, getEagleItem, updateEagleItem } from "@/services/api/eagle";
+import { addImageToEagle, checkEagleAgent, eagleFileUrl, eagleItemLink, getEagleItem, openCanvasInConnectedBrowser, updateEagleItem, waitForEagleItem } from "@/services/api/eagle";
 import { CanvasSelectionToolbar } from "@/components/canvas/canvas-selection-toolbar";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
@@ -296,6 +296,7 @@ function InfiniteCanvasPage() {
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const videoPollIdsRef = useRef(new Set<string>());
+    const eagleSyncIdsRef = useRef(new Set<string>());
 
     useEffect(() => {
         const requests = generationRequestsRef.current;
@@ -455,6 +456,8 @@ function InfiniteCanvasPage() {
         setProjectLoaded(false);
         const project = openProject(projectId);
         if (!project) {
+            const nodeId = new URLSearchParams(window.location.search).get("node");
+            if (nodeId) void openCanvasInConnectedBrowser(projectId, nodeId).catch(() => message.error("无法连接 Eagle Agent，请先启动保存该画布的页面和 Eagle Agent"));
             navigate("/canvas", { replace: true });
             return;
         }
@@ -758,7 +761,7 @@ function InfiniteCanvasPage() {
     const angleNode = angleNodeId ? nodeById.get(angleNodeId) || null : null;
     const contextMenuNode = contextMenu?.type === "node" ? nodeById.get(contextMenu.nodeId) || null : null;
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
-    const previewContent = previewImageId ? (findResultSlot(previewNode, previewImageId) || previewNode?.metadata?.images?.find((image) => image.id === previewImageId))?.content : previewNode?.metadata?.content;
+    const previewContent = previewImageId ? (findResultSlot(previewNode, previewImageId) || previewNode?.metadata?.images?.find((image) => image.id === previewImageId))?.content : previewNode?.metadata?.content || (previewNode ? getNodeDefinition(previewNode.type)?.resource?.(previewNode)?.url : undefined);
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
     const selectedNodes = useMemo(() => nodes.filter((node) => selectedNodeIds.has(node.id)), [nodes, selectedNodeIds]);
     const canGroupSelection = canGroupSelectedNodes(selectedNodeIds, nodes);
@@ -838,7 +841,7 @@ function InfiniteCanvasPage() {
         setContextMenu,
     });
 
-    const { pluginHost, renderPluginPanel, buildNodeToolbarItems } = usePluginHost({
+    const { pluginHost, renderPluginPanel, buildNodeToolbarItems, pluginSettingsNodeId, setPluginSettingsNodeId } = usePluginHost({
         effectiveConfig,
         isAiConfigReady,
         openConfigDialog,
@@ -872,7 +875,7 @@ function InfiniteCanvasPage() {
             // Built-in image, video, and config nodes retain their existing open-on-create behavior.
             const wantsPanel = definition?.hidePanel
                 ? false
-                : definition?.Panel
+                : definition?.Panel && !definition.useBuiltinPanel
                   ? Boolean(definition.autoOpenPanel)
                   : definition?.useBuiltinPanel
                     ? true
@@ -1171,12 +1174,17 @@ function InfiniteCanvasPage() {
         focusNodeRef.current = focusNode;
     }, [focusNode]);
 
+    const focusedLinkRef = useRef("");
     useEffect(() => {
         const nodeId = searchParams.get("node");
-        if (!projectLoaded || !nodeId || !nodesRef.current.some((node) => node.id === nodeId)) return;
-        const timer = window.setTimeout(() => focusNode(nodeId), 0);
-        return () => window.clearTimeout(timer);
-    }, [focusNode, projectLoaded, searchParams]);
+        const key = `${projectId}:${searchParams.toString()}`;
+        if (!projectLoaded || !nodeId || focusedLinkRef.current === key || !nodes.some((node) => node.id === nodeId)) return;
+        const frame = window.requestAnimationFrame(() => {
+            focusedLinkRef.current = key;
+            focusNode(nodeId);
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [focusNode, nodes, projectId, projectLoaded, searchParams]);
 
     const focusSelectedNode = useCallback(() => {
         const nodeId = selectedNodeIdsRef.current.values().next().value;
@@ -1918,7 +1926,7 @@ function InfiniteCanvasPage() {
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
+        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.mimeType || node.metadata.content)}`);
     }, []);
 
     const downloadBatchImage = useCallback((node: CanvasNodeData, imageId: string) => {
@@ -1986,20 +1994,32 @@ function InfiniteCanvasPage() {
                 return;
             }
             if (!node.metadata?.content) return message.error(t("canvas.projectPage.noImageToSave"));
-            const dataUrl = node.metadata.storageKey ? "" : node.metadata.content;
+            if (node.metadata.eagleItemId) {
+                try {
+                    const response = await fetch(node.metadata.content);
+                    if (!response.ok) throw new Error("无法读取 Eagle 原图");
+                    const image = await uploadImage(await response.blob());
+                    node = { ...node, metadata: { ...node.metadata, ...imageMetadata(image) } };
+                } catch (error) {
+                    return message.error(error instanceof Error ? error.message : "无法读取 Eagle 原图");
+                }
+            }
+            const metadata = node.metadata;
+            if (!metadata?.content) return message.error(t("canvas.projectPage.noImageToSave"));
+            const dataUrl = metadata.storageKey ? "" : metadata.content;
             addAsset({
                 kind: "image",
                 title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasImage"),
-                coverUrl: node.metadata.content,
+                coverUrl: metadata.content,
                 tags: [],
                 source: "Canvas",
                 data: {
                     dataUrl,
-                    storageKey: node.metadata.storageKey,
-                    width: node.metadata.naturalWidth || node.width,
-                    height: node.metadata.naturalHeight || node.height,
-                    bytes: node.metadata.bytes || getDataUrlByteSize(dataUrl),
-                    mimeType: node.metadata.mimeType || "image/png",
+                    storageKey: metadata.storageKey,
+                    width: metadata.naturalWidth || node.width,
+                    height: metadata.naturalHeight || node.height,
+                    bytes: metadata.bytes || getDataUrlByteSize(dataUrl),
+                    mimeType: metadata.mimeType || "image/png",
                 },
                 metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
             });
@@ -2269,39 +2289,53 @@ function InfiniteCanvasPage() {
     }, []);
 
     const syncImageToEagle = useCallback(async (node: CanvasNodeData) => {
+        if (eagleSyncIdsRef.current.has(node.id)) return;
+        eagleSyncIdsRef.current.add(node.id);
         try {
             if (!getNodeDefinition("eagle:item")) throw new Error("请先在节点插件中启用 Eagle 资源插件");
             await checkEagleAgent();
-            const result = await addImageToEagle(node);
+            const pending = node.metadata?.pendingEagleItem;
+            const itemId = pending && pending.storageKey === node.metadata?.storageKey && pending.content === node.metadata?.content ? pending.id : (await addImageToEagle(node)).itemId;
+            setNodes((current) => current.map((item) => item.id === node.id && item.metadata?.storageKey === node.metadata?.storageKey && item.metadata?.content === node.metadata?.content ? { ...item, metadata: { ...item.metadata, pendingEagleItem: { id: itemId, storageKey: node.metadata?.storageKey, content: node.metadata?.content } } } : item));
+            await waitForEagleItem(itemId);
+            const currentNode = nodesRef.current.find((item) => item.id === node.id);
+            if (!currentNode || currentNode.type !== node.type || currentNode.metadata?.storageKey !== node.metadata?.storageKey || currentNode.metadata?.content !== node.metadata?.content) {
+                message.warning(`图片已更改或删除，Eagle Item ${itemId} 已创建，画布节点未转换`);
+                return;
+            }
             const canvasUrl = new URL(window.location.href);
+            canvasUrl.search = "";
+            canvasUrl.hash = "";
             canvasUrl.searchParams.set("node", node.id);
-            await updateEagleItem(result.itemId, { tags: ["infinite-canvas"], annotation: node.metadata?.prompt || node.metadata?.composerContent || "", url: canvasUrl.toString() });
-            const item = await getEagleItem(result.itemId);
-            setNodes((current) => current.map((itemNode) => itemNode.id === node.id ? {
+            await updateEagleItem(itemId, { tags: ["infinite-canvas"], annotation: node.metadata?.prompt || node.metadata?.composerContent || "", url: canvasUrl.toString() });
+            const item = await getEagleItem(itemId);
+            setNodes((current) => current.map((itemNode) => itemNode.id === node.id && itemNode.type === node.type && itemNode.metadata?.storageKey === node.metadata?.storageKey && itemNode.metadata?.content === node.metadata?.content ? {
                 ...itemNode,
-                type: "eagle:item",
+                type: CanvasNodeType.Image,
                 title: item.name || itemNode.title,
-                width: item.width || itemNode.width,
-                height: item.height || itemNode.height,
                 metadata: {
                     ...itemNode.metadata,
-                    content: undefined,
+                    content: eagleFileUrl(itemId),
                     storageKey: undefined,
+                    generationBatches: itemNode.metadata?.generationBatches?.map((batch) => ({ ...batch, slots: batch.slots.map((slot) => slot.id === itemNode.metadata?.currentResultId ? { ...slot, content: eagleFileUrl(itemId), storageKey: undefined, eagleItemId: itemId } : slot) })),
                     status: "success",
-                    eagleItemId: result.itemId,
+                    pendingEagleItem: undefined,
+                    eagleItemId: itemId,
                     eagleStatus: "ready",
                     eagleTags: item.tags,
                     eagleAnnotation: item.annotation,
                     eagleSourceUrl: item.url,
-                    eagleItemLink: eagleItemLink(result.itemId),
+                    eagleItemLink: eagleItemLink(itemId),
                     naturalWidth: item.width || itemNode.metadata?.naturalWidth,
                     naturalHeight: item.height || itemNode.metadata?.naturalHeight,
-                    mimeType: itemNode.metadata?.mimeType || "image/png",
+                    mimeType: item.ext ? `image/${item.ext.toLowerCase() === "jpg" ? "jpeg" : item.ext.toLowerCase()}` : itemNode.metadata?.mimeType,
                 },
             } : itemNode));
             message.success("图片已同步到 Eagle");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "Eagle Agent 未启动，请先启动服务");
+        } finally {
+            eagleSyncIdsRef.current.delete(node.id);
         }
     }, [message, setNodes]);
 
@@ -2409,6 +2443,7 @@ function InfiniteCanvasPage() {
                                       height: s.height,
                                       metadata: originalResult({
                                           ...node.metadata,
+                                          eagleItemId: undefined,
                                           ...(node.type === CanvasNodeType.Image ? {} : { generationBatches: undefined }),
                                           ...imageMetadata(image),
                                           errorDetails: undefined,
@@ -2857,7 +2892,7 @@ function InfiniteCanvasPage() {
 
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
-            getNodeDefinition(panelNode.type)?.Panel ? (
+            getNodeDefinition(panelNode.type)?.Panel && !getNodeDefinition(panelNode.type)?.useBuiltinPanel ? (
                 renderPluginPanel(panelNode)
             ) : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
@@ -3239,6 +3274,9 @@ function InfiniteCanvasPage() {
                 <input ref={imageInputRef} type="file" multiple accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
+                <Modal title={pluginSettingsNodeId ? getNodeDefinition(nodeById.get(pluginSettingsNodeId)?.type || "")?.title : undefined} open={Boolean(pluginSettingsNodeId && nodeById.has(pluginSettingsNodeId))} centered footer={null} onCancel={() => setPluginSettingsNodeId(null)}>
+                    {pluginSettingsNodeId && nodeById.get(pluginSettingsNodeId) ? renderPluginPanel(nodeById.get(pluginSettingsNodeId)!) : null}
+                </Modal>
                 <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
 
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}

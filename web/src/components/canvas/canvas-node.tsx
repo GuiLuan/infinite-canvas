@@ -133,7 +133,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState(data.title || "");
-    const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
+    const hasImageContent = data.type === CanvasNodeType.Image ? Boolean(data.metadata?.content) : definition?.resource?.(data)?.kind === "image";
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content);
     const isGroup = data.type === CanvasNodeType.Group;
@@ -405,7 +405,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         if (definition.onDoubleClick(pluginContext)) event.stopPropagation();
                         return;
                     }
-                    if (data.type === CanvasNodeType.Image && hasImageContent) {
+                    if (hasImageContent) {
                         event.stopPropagation();
                         onViewImage?.(data);
                         return;
@@ -489,7 +489,7 @@ function NodeContent(props: NodeContentRendererProps) {
         const definition = getNodeDefinition(node.type);
         const PluginContent = definition?.Content;
         const content = configContent ? configContent(node)
-            : !node.metadata?.currentResultId && !node.metadata?.content && !isEditingContent ? <GenerationStatus node={node} history={history} />
+            : !node.metadata?.currentResultId && !node.metadata?.content && !isEditingContent && !PluginContent ? <GenerationStatus node={node} history={history} />
             : Renderer ? <Renderer {...props} />
             : PluginContent && props.pluginContext ? <PluginContent ctx={props.pluginContext} />
             : null;

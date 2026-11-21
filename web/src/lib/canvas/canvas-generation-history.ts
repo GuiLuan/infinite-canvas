@@ -86,8 +86,8 @@ export async function readGenerationReferences(snapshot: CanvasGenerationSnapsho
 }
 
 export function generationSlot(id: string, metadata: CanvasNodeMetadata): CanvasGenerationSlot {
-    const { content, storageKey, naturalWidth, naturalHeight, bytes, mimeType, durationMs } = metadata;
-    return { id, status: "success", content: content || "", storageKey, naturalWidth, naturalHeight, bytes, mimeType, durationMs };
+    const { content, storageKey, naturalWidth, naturalHeight, bytes, mimeType, durationMs, eagleItemId } = metadata;
+    return { id, status: "success", content: content || "", storageKey, naturalWidth, naturalHeight, bytes, mimeType, durationMs, eagleItemId };
 }
 
 export function originalResult(metadata: CanvasNodeMetadata): CanvasNodeMetadata {
@@ -99,6 +99,7 @@ export function originalResult(metadata: CanvasNodeMetadata): CanvasNodeMetadata
 export function applyCurrentResult(node: CanvasNodeData, slot?: CanvasGenerationSlot): CanvasNodeData {
     const metadata = {
         ...node.metadata,
+        eagleItemId: slot?.eagleItemId,
         currentResultId: slot?.id,
         content: slot?.content,
         storageKey: slot?.storageKey,

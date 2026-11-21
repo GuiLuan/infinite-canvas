@@ -61,7 +61,7 @@ export type CanvasGenerationSnapshot = {
     referenceAudios: ReferenceAudio[];
 };
 
-export type CanvasGenerationSlot = Pick<CanvasNodeMetadata, "storageKey" | "naturalWidth" | "naturalHeight" | "bytes" | "mimeType" | "durationMs" | "errorDetails"> & {
+export type CanvasGenerationSlot = Pick<CanvasNodeMetadata, "storageKey" | "naturalWidth" | "naturalHeight" | "bytes" | "mimeType" | "durationMs" | "errorDetails" | "eagleItemId"> & {
     id: string;
     content: string;
     status: "loading" | "success" | "error" | "cancelled";
@@ -113,6 +113,10 @@ export type CanvasNodeMetadata = {
     images?: CanvasNodeImage[];
     primaryImageId?: string;
     storageKey?: string;
+    eagleItemId?: string;
+    eagleAgentUrl?: string;
+    eagleAgentToken?: string;
+    pendingEagleItem?: { id: string; storageKey?: string; content?: string };
     mimeType?: string;
     bytes?: number;
     durationMs?: number;

@@ -2,6 +2,7 @@ import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/store
 import i18n from "@/i18n";
 import { ensureImagePreview, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
+import { eagleFileUrl } from "@/services/api/eagle";
 import { generationHistoryStatus, hydrateGenerationBatches } from "./canvas-generation-history";
 import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
@@ -46,6 +47,11 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
 export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
     return Promise.all(
         nodes.map(async (node) => {
+            if (node.type === "eagle:item" && node.metadata?.eagleItemId) {
+                const { eagleItemId, eagleAgentUrl, eagleAgentToken, currentResultId, generationBatches } = node.metadata;
+                const content = eagleFileUrl(eagleItemId, eagleAgentUrl, eagleAgentToken);
+                node = { ...node, type: CanvasNodeType.Image, metadata: { ...node.metadata, content, storageKey: undefined, generationBatches: generationBatches?.map((batch) => ({ ...batch, slots: batch.slots.map((slot) => slot.id === currentResultId ? { ...slot, content, storageKey: undefined, eagleItemId } : slot) })) } };
+            }
             if (node.metadata?.generationBatches?.length) return hydrateGenerationBatches(node);
             const metadata = node.metadata;
             const content = metadata?.content;
