@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "jsx": "react-jsx",
+        "jsxImportSource": "@infinite-canvas/plugin-sdk",
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true
+    },
+    "include": ["src"]
+}

@@ -1,0 +1,14 @@
+services:
+  eagle-agent:
+    build: .
+    ports:
+      - "23211:23211"
+    environment:
+      PORT: 23211
+      EAGLE_API_BASE_URL: ${EAGLE_API_BASE_URL:-http://host.docker.internal:41595}
+      EAGLE_AGENT_TOKEN: ${EAGLE_AGENT_TOKEN:-}
+      EAGLE_PATH_REWRITE_FROM: ${EAGLE_PATH_REWRITE_FROM:-}
+      EAGLE_PATH_REWRITE_TO: ${EAGLE_PATH_REWRITE_TO:-/eagle-data}
+      EAGLE_LIBRARY_ROOT: ${EAGLE_LIBRARY_ROOT:-/eagle-data}
+    volumes:
+      - ${EAGLE_LIBRARY_HOST_PATH:-./eagle-data}:/eagle-data:ro

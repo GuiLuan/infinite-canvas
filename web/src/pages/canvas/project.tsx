@@ -34,6 +34,7 @@ import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
 import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, unreadyImageReferences, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
+import { addImageToEagle, checkEagleAgent, eagleItemLink, getEagleItem, updateEagleItem } from "@/services/api/eagle";
 import { CanvasSelectionToolbar } from "@/components/canvas/canvas-selection-toolbar";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
@@ -1170,6 +1171,13 @@ function InfiniteCanvasPage() {
         focusNodeRef.current = focusNode;
     }, [focusNode]);
 
+    useEffect(() => {
+        const nodeId = searchParams.get("node");
+        if (!projectLoaded || !nodeId || !nodesRef.current.some((node) => node.id === nodeId)) return;
+        const timer = window.setTimeout(() => focusNode(nodeId), 0);
+        return () => window.clearTimeout(timer);
+    }, [focusNode, projectLoaded, searchParams]);
+
     const focusSelectedNode = useCallback(() => {
         const nodeId = selectedNodeIdsRef.current.values().next().value;
         if (nodeId) focusNode(nodeId);
@@ -2260,6 +2268,43 @@ function InfiniteCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, fontSize } } : node)));
     }, []);
 
+    const syncImageToEagle = useCallback(async (node: CanvasNodeData) => {
+        try {
+            if (!getNodeDefinition("eagle:item")) throw new Error("请先在节点插件中启用 Eagle 资源插件");
+            await checkEagleAgent();
+            const result = await addImageToEagle(node);
+            const canvasUrl = new URL(window.location.href);
+            canvasUrl.searchParams.set("node", node.id);
+            await updateEagleItem(result.itemId, { tags: ["infinite-canvas"], annotation: node.metadata?.prompt || node.metadata?.composerContent || "", url: canvasUrl.toString() });
+            const item = await getEagleItem(result.itemId);
+            setNodes((current) => current.map((itemNode) => itemNode.id === node.id ? {
+                ...itemNode,
+                type: "eagle:item",
+                title: item.name || itemNode.title,
+                width: item.width || itemNode.width,
+                height: item.height || itemNode.height,
+                metadata: {
+                    ...itemNode.metadata,
+                    content: undefined,
+                    storageKey: undefined,
+                    status: "success",
+                    eagleItemId: result.itemId,
+                    eagleStatus: "ready",
+                    eagleTags: item.tags,
+                    eagleAnnotation: item.annotation,
+                    eagleSourceUrl: item.url,
+                    eagleItemLink: eagleItemLink(result.itemId),
+                    naturalWidth: item.width || itemNode.metadata?.naturalWidth,
+                    naturalHeight: item.height || itemNode.metadata?.naturalHeight,
+                    mimeType: itemNode.metadata?.mimeType || "image/png",
+                },
+            } : itemNode));
+            message.success("图片已同步到 Eagle");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "Eagle Agent 未启动，请先启动服务");
+        }
+    }, [message, setNodes]);
+
     const handleUploadRequest = useCallback((nodeId?: string, position?: Position) => {
         uploadTargetRef.current = { nodeId, position };
         imageInputRef.current?.click();
@@ -3087,6 +3132,7 @@ function InfiniteCanvasPage() {
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
+                    onSyncToEagle={(node) => void syncImageToEagle(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onSplit={(node) => setSplitNodeId(node.id)}
