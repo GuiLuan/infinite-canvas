@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { localForageStorage } from "@/lib/localforage-storage";
+import type { CanvasPlugin } from "@/types/canvas-plugin";
 
 export type InstalledPlugin = {
     id: string;
@@ -18,6 +19,7 @@ export type InstalledPlugin = {
 
 type PluginStore = {
     plugins: InstalledPlugin[];
+    settings: Record<string, CanvasPlugin["Settings"]>;
     upsert: (plugin: Omit<InstalledPlugin, "installedAt"> & { installedAt?: string }) => void;
     setEnabled: (id: string, enabled: boolean) => void;
     remove: (id: string) => void;
@@ -27,6 +29,7 @@ export const usePluginStore = create<PluginStore>()(
     persist(
         (set) => ({
             plugins: [],
+            settings: {},
             upsert: (plugin) =>
                 set((state) => {
                     const installedAt = plugin.installedAt || new Date().toISOString();
@@ -40,6 +43,7 @@ export const usePluginStore = create<PluginStore>()(
         {
             name: "infinite-canvas:plugin_store",
             storage: createJSONStorage(() => localForageStorage),
+            partialize: (state) => ({ plugins: state.plugins }),
         },
     ),
 );

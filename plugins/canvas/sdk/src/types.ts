@@ -317,6 +317,8 @@ export type PluginRuntime = CanvasPluginApp & {
 };
 
 // 插件包(默认导出对象,或返回它的工厂函数)
+export type CanvasPluginSettingsProps = { theme: CanvasTheme; onClose: () => void };
+
 export type CanvasPlugin = {
     id: string; // 唯一,kebab-case
     name: string;
@@ -325,6 +327,7 @@ export type CanvasPlugin = {
     minAppVersion?: string;
     css?: string; // 插件样式,启用时自动注入、卸载/禁用时自动清理
     nodes: CanvasNodeDefinition[];
+    Settings?: ComponentType<CanvasPluginSettingsProps>;
     setup?: (app: CanvasPluginApp) => void | (() => void);
 };
 

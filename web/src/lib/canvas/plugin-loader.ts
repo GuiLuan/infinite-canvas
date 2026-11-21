@@ -9,6 +9,7 @@ const cleanups = new Map<string, () => void>();
 // A remote plugin may export CanvasPlugin directly or a factory that receives runtime and returns CanvasPlugin.
 // The factory uses runtime.React so the bundle does not need its own React copy.
 async function evaluatePluginSource(source: string): Promise<CanvasPlugin> {
+    getPluginRuntime();
     const blob = new Blob([source], { type: "text/javascript" });
     const url = URL.createObjectURL(blob);
     try {
@@ -16,6 +17,7 @@ async function evaluatePluginSource(source: string): Promise<CanvasPlugin> {
         const exported = mod.default ?? mod.plugin;
         const plugin = typeof exported === "function" ? (exported as (runtime: unknown) => unknown)(getPluginRuntime()) : exported;
         assertPlugin(plugin);
+        usePluginStore.setState((state) => ({ settings: { ...state.settings, [plugin.id]: plugin.Settings } }));
         return plugin;
     } finally {
         URL.revokeObjectURL(url);
@@ -86,6 +88,11 @@ export async function setPluginEnabled(record: InstalledPlugin, enabled: boolean
 
 export function uninstallPlugin(id: string) {
     deactivatePlugin(id);
+    usePluginStore.setState((state) => {
+        const settings = { ...state.settings };
+        delete settings[id];
+        return { settings };
+    });
     usePluginStore.getState().remove(id);
 }
 
@@ -97,13 +104,14 @@ export async function ensurePluginsLoaded() {
     loaded = true;
     await usePluginStore.persist.rehydrate();
     await loadLocalPlugins(); // Discover disabled local plugins first, then activate all enabled records.
-    const records = usePluginStore.getState().plugins.filter((record) => record.enabled);
+    const records = usePluginStore.getState().plugins;
     await Promise.all(
         records.map(async (record) => {
             try {
                 // Local plugins use the latest output; other plugins use their cached source.
                 const source = record.local ? await fetchPluginSource(withCacheBust(record.url)) : record.source;
-                activatePlugin(await evaluatePluginSource(source));
+                const plugin = await evaluatePluginSource(source);
+                if (record.enabled) activatePlugin(plugin);
             } catch (error) {
                 console.error(`[plugin] Failed to load: ${record.id}`, error);
             }

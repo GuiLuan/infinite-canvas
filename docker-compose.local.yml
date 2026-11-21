@@ -8,6 +8,14 @@ services:
       - "3000:3000"
     restart: unless-stopped
 
+  eagle-agent:
+    extends:
+      file: ./eagle-agent/docker-compose.yml
+      service: eagle-agent
+    build:
+      context: ./eagle-agent
+    profiles: [eagle]
+
   proxy:
     image: infinite-canvas-proxy:local
     build:

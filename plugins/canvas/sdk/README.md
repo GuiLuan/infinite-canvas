@@ -70,6 +70,20 @@ await buildPlugin(import.meta.url);
 
 插件 `tsconfig.json` 关键项:`"jsx": "react-jsx"`、`"jsxImportSource": "@infinite-canvas/plugin-sdk"`、`"moduleResolution": "bundler"`。
 
+## 插件设置
+
+插件可提供可选的 `Settings` 组件，宿主在「节点插件」中显示「设置」入口。组件接收 `CanvasPluginSettingsProps`，其中 `theme` 提供当前画布主题，`onClose` 用于关闭设置窗口。连接参数等小配置可保存在当前浏览器站点的 `localStorage` 中。
+
+```tsx
+import type { CanvasPluginSettingsProps } from "@infinite-canvas/plugin-sdk";
+
+function Settings({ theme, onClose }: CanvasPluginSettingsProps) {
+    return <button onClick={onClose} style={{ color: theme.node.text }}>关闭设置</button>;
+}
+
+// 将 Settings 添加到 definePlugin({ id, name, version, nodes, Settings }) 中。
+```
+
 ## 设计约束
 
 - **React 单例**:JSX 与 hooks 惰性读取 `globalThis.InfiniteCanvasRuntime.React`(宿主在加载插件前注入),react 全程 external,绝不打包第二份。

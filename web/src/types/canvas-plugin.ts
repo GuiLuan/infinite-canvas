@@ -135,6 +135,8 @@ export type CanvasPluginApp = {
 };
 
 // Default plugin package export.
+export type CanvasPluginSettingsProps = { theme: CanvasTheme; onClose: () => void };
+
 export type CanvasPlugin = {
     id: string;
     name: string;
@@ -143,5 +145,6 @@ export type CanvasPlugin = {
     minAppVersion?: string;
     css?: string; // Injected when enabled and removed when uninstalled or disabled.
     nodes: CanvasNodeDefinition[];
+    Settings?: ComponentType<CanvasPluginSettingsProps>;
     setup?: (app: CanvasPluginApp) => void | (() => void);
 };

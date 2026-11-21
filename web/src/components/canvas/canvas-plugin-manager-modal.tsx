@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { App, Button, Input, Modal, Popconfirm, Switch, Tabs } from "antd";
-import { AlertTriangle, Download, Puzzle, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, Download, Puzzle, RefreshCw, Settings, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -14,6 +14,8 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { message } = App.useApp();
     const plugins = usePluginStore((state) => state.plugins);
+    const settings = usePluginStore((state) => state.settings);
+    const [settingsId, setSettingsId] = useState<string | null>(null);
     const [url, setUrl] = useState("");
     const [installing, setInstalling] = useState(false);
     const [busyId, setBusyId] = useState<string | null>(null);
@@ -23,6 +25,7 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
     const [officialError, setOfficialError] = useState<string | null>(null);
 
     const recordById = useMemo(() => new Map(plugins.map((item) => [item.id, item])), [plugins]);
+    const officialPlugins = official.filter((item) => !recordById.get(item.id)?.local);
     const localPlugins = useMemo(() => plugins.filter((item) => item.local), [plugins]);
     const thirdPartyPlugins = useMemo(() => plugins.filter((item) => !item.local && !item.official), [plugins]);
 
@@ -82,10 +85,11 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
         }
     };
 
-    // Installed plugin actions: enable toggle plus update/uninstall for non-local plugins.
+    // Installed plugins expose settings alongside activation and update actions.
     // Highlight the update action when a newer remote version is available.
     const installedControls = (record: InstalledPlugin, upgradable = false) => (
         <>
+            {settings[record.id] ? <Button type="text" size="small" icon={<Settings className="size-4" />} onClick={() => setSettingsId(record.id)}>设置</Button> : null}
             <Switch size="small" checked={record.enabled} loading={busyId === record.id} onChange={(checked) => runOnPlugin(record, () => setPluginEnabled(record, checked), t(checked ? "canvas.plugins.enabled" : "canvas.plugins.disabled"))} />
             {!record.local && (
                 <>
@@ -163,11 +167,11 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
                 </div>
             ) : loadingOfficial && official.length === 0 ? (
                 emptyHint(t("canvas.plugins.loadingOfficial"))
-            ) : official.length === 0 ? (
+            ) : officialPlugins.length === 0 ? (
                 emptyHint(t("canvas.plugins.noOfficial"))
             ) : (
                 <div className="thin-scrollbar max-h-[46vh] space-y-2 overflow-auto">
-                    {official.map((entry) => {
+                    {officialPlugins.map((entry) => {
                         const record = recordById.get(entry.id);
                         // Show the update dot and highlight the action when the remote version is newer.
                         const upgradable = Boolean(record && hasUpgrade(record.version, entry.version));
@@ -177,7 +181,7 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
                             upgradable ? withUpgradeDot(icon) : icon,
                             entry.name,
                             // Show local and remote versions in the title so the update target is explicit.
-                            upgradable && record ? `${record.version} → ${entry.version}` : entry.version,
+                            upgradable && record ? `${record.version} → ${entry.version}` : record?.version || entry.version,
                             entry.description,
                             record ? (
                                 installedControls(record, upgradable)
@@ -213,15 +217,22 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
         { key: "third", label: t("canvas.plugins.thirdParty"), children: thirdPartyTab },
     ];
 
+    const PluginSettings = settingsId ? settings[settingsId] : undefined;
+
     return (
-        <Modal title={t("canvas.plugins.title")} open={open} onCancel={onClose} footer={null} centered width={640}>
-            <div className="space-y-3">
-                <div className="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "#f59e0b55", background: "#f59e0b14", color: theme.node.text }}>
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
-                    <span>{t("canvas.plugins.warning")}</span>
+        <>
+            <Modal title={t("canvas.plugins.title")} open={open} onCancel={() => { setSettingsId(null); onClose(); }} footer={null} centered width={640}>
+                <div className="space-y-3">
+                    <div className="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "#f59e0b55", background: "#f59e0b14", color: theme.node.text }}>
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                        <span>{t("canvas.plugins.warning")}</span>
+                    </div>
+                    <Tabs defaultActiveKey="official" items={tabs} />
                 </div>
-                <Tabs defaultActiveKey="official" items={tabs} />
-            </div>
-        </Modal>
+            </Modal>
+            <Modal title={`${settingsId ? recordById.get(settingsId)?.name || "插件" : "插件"}设置`} open={open && Boolean(PluginSettings)} onCancel={() => setSettingsId(null)} footer={null} centered width={480} destroyOnHidden>
+                {PluginSettings ? <PluginSettings key={settingsId} theme={theme} onClose={() => setSettingsId(null)} /> : null}
+            </Modal>
+        </>
     );
 }

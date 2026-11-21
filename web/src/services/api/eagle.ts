@@ -3,6 +3,7 @@ import type { CanvasNodeData } from "@/types/canvas";
 
 export const EAGLE_AGENT_URL_KEY = "infinite-canvas:eagle-agent-url";
 export const EAGLE_AGENT_TOKEN_KEY = "infinite-canvas:eagle-agent-token";
+export const EAGLE_API_TOKEN_KEY = "infinite-canvas:eagle-api-token";
 export const DEFAULT_EAGLE_AGENT_URL = "http://127.0.0.1:23211";
 
 export type EagleItem = {
@@ -27,10 +28,16 @@ export function eagleAgentToken() {
     return typeof window === "undefined" ? "" : window.localStorage.getItem(EAGLE_AGENT_TOKEN_KEY)?.trim() || "";
 }
 
+function eagleApiToken() {
+    return typeof window === "undefined" ? "" : window.localStorage.getItem(EAGLE_API_TOKEN_KEY)?.trim() || "";
+}
+
 export function eagleAgentRequestUrl(path: string, query?: Record<string, string>) {
     const url = new URL(`${eagleAgentUrl()}${path}`);
     const token = eagleAgentToken();
     if (token) url.searchParams.set("token", token);
+    const apiToken = eagleApiToken();
+    if (apiToken) url.searchParams.set("eagleApiToken", apiToken);
     Object.entries(query || {}).forEach(([key, value]) => url.searchParams.set(key, value));
     return url.toString();
 }
@@ -66,6 +73,31 @@ export async function getEagleItem(itemId: string) {
     return result.item;
 }
 
+export async function matchEagleImageFile(file: File) {
+    const { selected, candidates } = await request<{ selected: EagleItem[]; candidates: EagleItem[] }>("/items/candidates", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: file.name, size: file.size }),
+    });
+    if (!selected.length && !candidates.length) return null;
+    const checked = new Set<string>();
+    const fileBytes = new Uint8Array(await file.arrayBuffer());
+    for (const group of [selected, candidates]) {
+        const matches: EagleItem[] = [];
+        for (const item of group) {
+            if (checked.has(item.id)) continue;
+            checked.add(item.id);
+            const response = await fetch(eagleFileUrl(item.id));
+            if (!response.ok) throw new Error("无法读取 Eagle 原图以核对拖入或粘贴的文件");
+            const original = new Uint8Array(await response.arrayBuffer());
+            if (original.length === fileBytes.length && original.every((value, index) => value === fileBytes[index])) matches.push(item);
+        }
+        if (matches.length > 1) throw new Error("匹配到多个内容相同的 Eagle Item，请复制目标 Item 的链接后粘贴");
+        if (matches.length === 1) return matches[0];
+    }
+    return null;
+}
+
 export async function waitForEagleItem(itemId: string) {
     for (let attempt = 0; attempt < 60; attempt++) {
         try {
@@ -78,10 +110,31 @@ export async function waitForEagleItem(itemId: string) {
     throw new Error(`Eagle 尚未完成入库，已保留 Item ID ${itemId}，请稍后重试同步`);
 }
 
-export function eagleFileUrl(itemId: string, agentUrl = eagleAgentUrl(), token = eagleAgentToken()) {
-    const url = new URL(`${agentUrl.replace(/\/$/, "")}/items/${encodeURIComponent(itemId)}/file`);
-    if (token) url.searchParams.set("token", token);
-    return url.toString();
+export function eagleFileUrl(itemId: string) {
+    return eagleAgentRequestUrl(`/items/${encodeURIComponent(itemId)}/file`);
+}
+
+export function refreshEagleNodeConnection(node: CanvasNodeData): CanvasNodeData {
+    const info = node.metadata;
+    if (!info) return node;
+    const hasEagleHistory = info.generationBatches?.some((batch) => batch.slots.some((slot) => slot.eagleItemId));
+    if (!info.eagleItemId && !hasEagleHistory) return node;
+    const content = info.eagleItemId ? eagleFileUrl(info.eagleItemId) : info.content;
+    return {
+        ...node,
+        metadata: {
+            ...info,
+            content,
+            storageKey: info.eagleItemId ? undefined : info.storageKey,
+            generationBatches: info.generationBatches?.map((batch) => ({
+                ...batch,
+                slots: batch.slots.map((slot) => {
+                    const itemId = slot.eagleItemId || (slot.id === info.currentResultId ? info.eagleItemId : undefined);
+                    return itemId ? { ...slot, content: eagleFileUrl(itemId), storageKey: undefined, eagleItemId: itemId } : slot;
+                }),
+            })),
+        },
+    };
 }
 
 export function eagleThumbnailUrl(itemId: string) {

@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion, type AiTextMessage } from "@/services/api/image";
 import { imageToDataUrl } from "@/services/image-storage";
-import { eagleFileUrl } from "@/services/api/eagle";
+import { eagleFileUrl, refreshEagleNodeConnection } from "@/services/api/eagle";
+import { onCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { decodeChannelModel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
@@ -111,7 +112,7 @@ export function usePluginHost(params: PluginHostParams) {
                 if (node.id !== nodeId) return node;
                 const metadata = { ...node.metadata, ...patch };
                 if ((node.type === "eagle:item" || node.metadata?.eagleItemId) && patch.eagleItemId && metadata.eagleStatus === "ready") {
-                    const content = eagleFileUrl(metadata.eagleItemId!, metadata.eagleAgentUrl, metadata.eagleAgentToken);
+                    const content = eagleFileUrl(metadata.eagleItemId!);
                     const generationBatches = metadata.generationBatches?.map((batch) => ({ ...batch, slots: batch.slots.map((slot) => slot.id === metadata.currentResultId ? { ...slot, content, storageKey: undefined, eagleItemId: metadata.eagleItemId } : slot) }));
                     return { ...node, type: "image", metadata: { ...metadata, content, storageKey: undefined, generationBatches } };
                 }
@@ -165,6 +166,13 @@ export function usePluginHost(params: PluginHostParams) {
     useEffect(() => {
         void ensurePluginsLoaded();
     }, []);
+
+    useEffect(() => {
+        const unsubscribe = onCanvasEvent("eagle:connection-changed", () => {
+            setNodes((nodes) => nodes.map(refreshEagleNodeConnection));
+        });
+        return () => { unsubscribe(); };
+    }, [setNodes]);
 
     return { pluginHost, renderPluginPanel, buildNodeToolbarItems, pluginSettingsNodeId, setPluginSettingsNodeId };
 }

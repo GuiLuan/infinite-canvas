@@ -48,6 +48,7 @@ import { useAgentStore } from "@/stores/use-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
+import { readCanvasTransfer, resolveEagleTransfer, type CanvasTransfer } from "./canvas-eagle-import";
 import { buildNodeMentionReferences, getGenerationResourceNodes, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildImageGenerationMetadata, cloneNodeAsTemplate, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -97,6 +98,7 @@ import {
 registerBuiltinNodes();
 
 type CanvasClipboard = {
+    marker: string;
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
 };
@@ -1072,9 +1074,11 @@ function InfiniteCanvasPage() {
         if (!copiedNodes.length) return;
 
         clipboardRef.current = {
+            marker: `infinite-canvas:nodes:${nanoid()}`,
             nodes: copiedNodes,
             connections: connectionsRef.current.filter((connection) => selectedIds.has(connection.toNodeId)).map((connection) => ({ ...connection })),
         };
+        return clipboardRef.current.marker;
     }, []);
 
     const pasteCopiedNodes = useCallback(() => {
@@ -1651,24 +1655,57 @@ function InfiniteCanvasPage() {
         [getCanvasCenter, t],
     );
 
-    const pasteSystemClipboard = useCallback(async () => {
-        if (!navigator.clipboard) return;
-
-        const items = await navigator.clipboard.read();
-        const imageItem = items.find((item) => item.types.some((type) => type.startsWith("image/")));
-        if (imageItem) {
-            const imageType = imageItem.types.find((type) => type.startsWith("image/"));
-            if (!imageType) return;
-            const blob = await imageItem.getType(imageType);
-            const file = new File([blob], "clipboard-image.png", { type: imageType });
-            void createImageFileNode(file, getCanvasCenter());
-            message.success(t("canvas.projectPage.clipboardImageAdded"));
-            return;
+    const importCanvasTransfer = useCallback(async (transfer: CanvasTransfer, position: Position, text = "") => {
+        try {
+            const { nodes: imported, files } = await resolveEagleTransfer(transfer, position);
+            if (imported.length) {
+                setNodes((prev) => [...prev, ...imported]);
+                setSelectedNodeIds(new Set(imported.map((node) => node.id)));
+                setSelectedConnectionId(null);
+                setContextMenu(null);
+                setDialogNodeId(imported[0].id);
+            }
+            const media = files.filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/") || isAudioFile(file));
+            for (const [index, file] of media.entries()) {
+                const offset = (imported.length + index) * 40;
+                const pos = { x: position.x + offset, y: position.y + offset };
+                if (isAudioFile(file)) await createAudioFileNode(file, pos);
+                else if (file.type.startsWith("video/")) await createVideoFileNode(file, pos);
+                else await createImageFileNode(file, pos);
+            }
+            if (!imported.length && !media.length) createTextNodeFromClipboard(text);
+        } catch (error) {
+            message.error(error instanceof TypeError ? "无法读取 Eagle 素材，请检查插件连接设置和 Eagle Agent 服务后重试" : error instanceof Error ? error.message : "素材导入失败，请重试");
         }
+    }, [createAudioFileNode, createImageFileNode, createVideoFileNode, createTextNodeFromClipboard, message]);
 
-        const text = await navigator.clipboard.readText();
-        if (createTextNodeFromClipboard(text)) message.success(t("canvas.projectPage.clipboardTextAdded"));
-    }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, t]);
+    useEffect(() => {
+        const ignoresClipboard = (event: ClipboardEvent) => {
+            const target = event.target instanceof Element ? event.target : null;
+            return Boolean(target?.closest("input,textarea,select,[contenteditable='true'],[data-canvas-no-zoom],[data-canvas-shortcuts-ignore]"));
+        };
+        const handleCopy = (event: ClipboardEvent) => {
+            if (event.defaultPrevented || ignoresClipboard(event) || window.getSelection()?.toString() || !event.clipboardData) return;
+            const marker = copySelectedNodes();
+            if (!marker) return;
+            event.clipboardData.setData("text/plain", marker);
+            event.preventDefault();
+        };
+        const handlePaste = (event: ClipboardEvent) => {
+            if (event.defaultPrevented || ignoresClipboard(event) || !event.clipboardData) return;
+            const transfer = readCanvasTransfer(event.clipboardData);
+            const text = event.clipboardData.getData("text/plain");
+            event.preventDefault();
+            if (text === clipboardRef.current?.marker && pasteCopiedNodes()) return;
+            void importCanvasTransfer(transfer, getCanvasCenter(), text);
+        };
+        window.addEventListener("copy", handleCopy);
+        window.addEventListener("paste", handlePaste);
+        return () => {
+            window.removeEventListener("copy", handleCopy);
+            window.removeEventListener("paste", handlePaste);
+        };
+    }, [copySelectedNodes, getCanvasCenter, importCanvasTransfer, pasteCopiedNodes]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -1717,18 +1754,6 @@ function InfiniteCanvasPage() {
                 return;
             }
 
-            if (isModifierShortcut && !event.altKey && key === "c") {
-                event.preventDefault();
-                copySelectedNodes();
-                return;
-            }
-
-            if (isModifierShortcut && !event.altKey && key === "v") {
-                event.preventDefault();
-                if (!pasteCopiedNodes()) void pasteSystemClipboard();
-                return;
-            }
-
             if (event.key === "Delete" || event.key === "Backspace") {
                 if (selectedNodeIdsRef.current.size) {
                     deleteNodes(new Set(selectedNodeIdsRef.current));
@@ -1756,7 +1781,7 @@ function InfiniteCanvasPage() {
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [copySelectedNodes, deleteConnection, deleteNodes, groupSelection, pasteCopiedNodes, pasteSystemClipboard, redoCanvas, selectedConnectionId, setConnecting, undoCanvas, ungroupSelection]);
+    }, [deleteConnection, deleteNodes, groupSelection, redoCanvas, selectedConnectionId, setConnecting, undoCanvas, ungroupSelection]);
 
     const handleConnectStart = useCallback(
         (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => {
@@ -2493,26 +2518,10 @@ function InfiniteCanvasPage() {
     const handleDrop = useCallback(
         (event: ReactDragEvent<HTMLDivElement>) => {
             event.preventDefault();
-            const files = Array.from(event.dataTransfer.files).filter(
-                (item) => item.type.startsWith("image/") || item.type.startsWith("video/") || isAudioFile(item),
-            );
-            if (!files.length) return;
-
-            const basePos = screenToCanvas(event.clientX, event.clientY);
-            const STAGGER = 40;
-            for (let i = 0; i < files.length; i++) {
-                const pos = { x: basePos.x + i * STAGGER, y: basePos.y + i * STAGGER };
-                const f = files[i];
-                if (isAudioFile(f)) {
-                    void createAudioFileNode(f, pos);
-                } else if (f.type.startsWith("video/")) {
-                    void createVideoFileNode(f, pos);
-                } else {
-                    void createImageFileNode(f, pos);
-                }
-            }
+            const transfer = readCanvasTransfer(event.dataTransfer);
+            void importCanvasTransfer(transfer, screenToCanvas(event.clientX, event.clientY));
         },
-        [createAudioFileNode, createImageFileNode, createVideoFileNode, screenToCanvas],
+        [importCanvasTransfer, screenToCanvas],
     );
 
     const startTitleEditing = useCallback(() => {

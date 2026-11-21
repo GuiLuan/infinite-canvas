@@ -7,6 +7,7 @@ const app = express();
 const port = Number(process.env.PORT || 23211);
 const eagleApiBase = String(process.env.EAGLE_API_BASE_URL || "http://127.0.0.1:41595").replace(/\/$/, "");
 const agentToken = String(process.env.EAGLE_AGENT_TOKEN || "");
+const defaultApiToken = String(process.env.EAGLE_API_TOKEN || "");
 const pathRewriteFrom = String(process.env.EAGLE_PATH_REWRITE_FROM || "");
 const pathRewriteTo = String(process.env.EAGLE_PATH_REWRITE_TO || "");
 const allowedRoot = String(process.env.EAGLE_LIBRARY_ROOT || "");
@@ -15,19 +16,21 @@ const canvasListeners = new Set();
 app.use(express.json({ limit: "40mb" }));
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type,x-eagle-agent-token");
+    res.setHeader("Access-Control-Allow-Headers", "content-type,x-eagle-agent-token,x-eagle-api-token");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
     if (req.method === "OPTIONS") return res.status(204).end();
     if (agentToken && req.headers["x-eagle-agent-token"] !== agentToken && req.query.token !== agentToken) return res.status(401).json({ ok: false, error: "Eagle Agent token 无效" });
     next();
 });
 
-function eagleUrl(endpoint, query = "") {
-    return `${eagleApiBase}${endpoint}${query}`;
+function eagleApiToken(req) {
+    return req.get("x-eagle-api-token") || (typeof req.query.eagleApiToken === "string" ? req.query.eagleApiToken : defaultApiToken);
 }
 
-async function eagleRequest(endpoint, init) {
-    const response = await fetch(eagleUrl(endpoint), { ...init, headers: { accept: "application/json", ...(init?.headers || {}) } });
+async function eagleRequest(endpoint, init, token = defaultApiToken) {
+    const url = new URL(`${eagleApiBase}${endpoint}`);
+    if (token) url.searchParams.set("token", token);
+    const response = await fetch(url, { ...init, headers: { accept: "application/json", ...(init?.headers || {}) } });
     const text = await response.text();
     let body;
     try {
@@ -35,12 +38,29 @@ async function eagleRequest(endpoint, init) {
     } catch {
         body = { status: "error", message: text || `Eagle 返回 ${response.status}` };
     }
+    if (response.status === 401) throw new Error("Eagle API Token 无效或未填写，请在插件设置中填写 Eagle 偏好设置 → 开发者选项中的 API Token");
     if (!response.ok || body?.status === "error") throw new Error(body?.message || `Eagle 请求失败 (${response.status})`);
     return body?.data ?? body;
 }
 
 function itemFromResult(data) {
     return Array.isArray(data?.data) ? data.data[0] || null : data;
+}
+
+async function listItems(filters, token) {
+    const items = [];
+    let offset = 0;
+    while (true) {
+        const result = await eagleRequest("/api/v2/item/get", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...filters, offset }),
+        }, token);
+        if (!Array.isArray(result?.data)) throw new Error("Eagle 未返回条目列表");
+        items.push(...result.data);
+        offset += result.data.length;
+        if (!result.data.length || offset >= result.total) return items;
+    }
 }
 
 function rewritePath(rawPath) {
@@ -54,16 +74,16 @@ function rewritePath(rawPath) {
     return resolved;
 }
 
-async function thumbnailPath(itemId) {
-    const result = await eagleRequest(`/api/item/thumbnail?id=${encodeURIComponent(itemId)}`);
+async function thumbnailPath(itemId, token) {
+    const result = await eagleRequest(`/api/item/thumbnail?id=${encodeURIComponent(itemId)}`, undefined, token);
     return rewritePath(result);
 }
 
-async function originalPath(itemId) {
+async function originalPath(itemId, token) {
     if (!/^[a-z0-9]+$/i.test(itemId)) throw new Error("Eagle Item ID 无效");
     const [result, library] = await Promise.all([
-        eagleRequest(`/api/v2/item/get?id=${encodeURIComponent(itemId)}`),
-        eagleRequest("/api/v2/library/info"),
+        eagleRequest(`/api/v2/item/get?id=${encodeURIComponent(itemId)}`, undefined, token),
+        eagleRequest("/api/v2/library/info", undefined, token),
     ]);
     const item = itemFromResult(result);
     if (!item?.name || !item?.ext || !library?.path) throw new Error("Eagle Item 或资源库不存在");
@@ -88,9 +108,9 @@ function sourcePayload(body) {
     return payload;
 }
 
-app.get("/health", async (_req, res) => {
+app.get("/health", async (req, res) => {
     try {
-        const info = await eagleRequest("/");
+        const info = await eagleRequest("/", undefined, eagleApiToken(req));
         res.json({ ok: true, eagle: { version: info?.version || null, buildVersion: info?.buildVersion || null }, capabilities: { itemMetadata: true, itemWrite: true, thumbnailStream: true } });
     } catch (error) {
         res.status(503).json({ ok: false, error: error instanceof Error ? error.message : String(error), eagleApiBase });
@@ -112,9 +132,28 @@ app.post("/canvas/open", (req, res) => {
     res.json({ ok: true });
 });
 
+app.post("/items/candidates", async (req, res) => {
+    const { name, size } = req.body || {};
+    if (typeof name !== "string" || !name || !Number.isFinite(size) || size < 0) return res.status(400).json({ ok: false, error: "缺少图片文件名或文件大小" });
+    const ext = path.extname(name).slice(1);
+    const stem = path.basename(name, path.extname(name));
+    try {
+        const filters = { keywords: [stem], ext };
+        const token = eagleApiToken(req);
+        const [selected, candidates] = await Promise.all([
+            listItems({ ...filters, isSelected: true }, token),
+            listItems(filters, token),
+        ]);
+        const matches = (item) => !item.isDeleted && `${item.name}.${item.ext}` === name && item.size === size;
+        res.json({ ok: true, selected: selected.filter(matches), candidates: candidates.filter(matches) });
+    } catch (error) {
+        res.status(502).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+});
+
 app.get("/items/:id", async (req, res) => {
     try {
-        const data = await eagleRequest(`/api/v2/item/get?id=${encodeURIComponent(req.params.id)}`);
+        const data = await eagleRequest(`/api/v2/item/get?id=${encodeURIComponent(req.params.id)}`, undefined, eagleApiToken(req));
         const item = itemFromResult(data);
         if (!item) return res.status(404).json({ ok: false, error: "Eagle Item 不存在" });
         res.json({ ok: true, item });
@@ -125,7 +164,7 @@ app.get("/items/:id", async (req, res) => {
 
 app.get("/items/:id/file", async (req, res) => {
     try {
-        const filePath = await originalPath(req.params.id);
+        const filePath = await originalPath(req.params.id, eagleApiToken(req));
         await access(filePath);
         res.type(path.extname(filePath));
         createReadStream(filePath).on("error", (error) => res.destroy(error)).pipe(res);
@@ -136,7 +175,7 @@ app.get("/items/:id/file", async (req, res) => {
 
 app.get("/items/:id/thumbnail", async (req, res) => {
     try {
-        const filePath = await thumbnailPath(req.params.id);
+        const filePath = await thumbnailPath(req.params.id, eagleApiToken(req));
         await access(filePath);
         res.setHeader("Cache-Control", "private, max-age=60");
         res.type(path.extname(filePath));
@@ -152,7 +191,7 @@ app.get("/items/:id/link", (req, res) => {
 
 app.post("/items", async (req, res) => {
     try {
-        const data = await eagleRequest("/api/v2/item/add", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sourcePayload(req.body)) });
+        const data = await eagleRequest("/api/v2/item/add", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sourcePayload(req.body)) }, eagleApiToken(req));
         const id = data?.id || data?.ids?.[0];
         if (!id) throw new Error("Eagle 没有返回新 Item ID");
         res.json({ ok: true, itemId: id, data });
@@ -163,7 +202,7 @@ app.post("/items", async (req, res) => {
 
 app.patch("/items/:id", async (req, res) => {
     try {
-        const data = await eagleRequest("/api/v2/item/update", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: req.params.id, ...req.body }) });
+        const data = await eagleRequest("/api/v2/item/update", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: req.params.id, ...req.body }) }, eagleApiToken(req));
         res.json({ ok: true, item: itemFromResult(data) || data });
     } catch (error) {
         res.status(502).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
